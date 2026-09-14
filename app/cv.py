@@ -1,8 +1,9 @@
+import hashlib
+import io
 import json
 from datetime import datetime, timezone
 
 import pdfplumber
-import io
 
 from app.db import get_conn
 from app.llm import generate, parse_json_response
@@ -48,25 +49,35 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
     return text
 
 
+def hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def build_profile(text: str) -> dict:
     raw = generate(PROMPT_TEMPLATE.format(text=text[:MAX_CV_CHARS]))
     return parse_json_response(raw)
 
 
-def save_profile(filename: str, raw_text: str, parsed: dict) -> None:
+def find_by_hash(content_hash: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM cv_profiles WHERE content_hash = ?", (content_hash,)
+        ).fetchone()
+    return _row_to_profile(row)
+
+
+def save_profile(filename: str, raw_text: str, content_hash: str, parsed: dict) -> dict:
+    """Inserts a new CV profile and makes it the active one."""
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO cv_profile (id, filename, raw_text, skills, experience_level, "
-            "domains_worked_in, target_roles, target_sector_profile, updated_at) "
-            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET "
-            "filename=excluded.filename, raw_text=excluded.raw_text, skills=excluded.skills, "
-            "experience_level=excluded.experience_level, domains_worked_in=excluded.domains_worked_in, "
-            "target_roles=excluded.target_roles, target_sector_profile=excluded.target_sector_profile, "
-            "updated_at=excluded.updated_at",
+        conn.execute("UPDATE cv_profiles SET is_active = 0")
+        cur = conn.execute(
+            "INSERT INTO cv_profiles (filename, content_hash, raw_text, skills, experience_level, "
+            "domains_worked_in, target_roles, target_sector_profile, is_active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
             (
                 filename,
+                content_hash,
                 raw_text,
                 json.dumps(parsed.get("skills", [])),
                 parsed.get("experience_level", "unknown"),
@@ -74,13 +85,24 @@ def save_profile(filename: str, raw_text: str, parsed: dict) -> None:
                 json.dumps(parsed.get("target_roles", [])),
                 parsed.get("target_sector_profile", ""),
                 now,
+                now,
             ),
         )
+        profile_id = cur.lastrowid
+    return get_profile_by_id(profile_id)
 
 
-def get_profile() -> dict | None:
+def activate_profile(profile_id: int) -> bool:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM cv_profile WHERE id = 1").fetchone()
+        exists = conn.execute("SELECT 1 FROM cv_profiles WHERE id = ?", (profile_id,)).fetchone()
+        if not exists:
+            return False
+        conn.execute("UPDATE cv_profiles SET is_active = 0")
+        conn.execute("UPDATE cv_profiles SET is_active = 1 WHERE id = ?", (profile_id,))
+    return True
+
+
+def _row_to_profile(row) -> dict | None:
     if not row:
         return None
     profile = dict(row)
@@ -88,3 +110,24 @@ def get_profile() -> dict | None:
     profile["domains_worked_in"] = json.loads(profile["domains_worked_in"] or "[]")
     profile["target_roles"] = json.loads(profile["target_roles"] or "[]")
     return profile
+
+
+def get_active_profile() -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM cv_profiles WHERE is_active = 1").fetchone()
+    return _row_to_profile(row)
+
+
+def get_profile_by_id(profile_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM cv_profiles WHERE id = ?", (profile_id,)).fetchone()
+    return _row_to_profile(row)
+
+
+def list_profiles() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, experience_level, is_active, created_at FROM cv_profiles "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]

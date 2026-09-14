@@ -4,91 +4,129 @@
   <meta charset="utf-8" />
   <title>Lead Matching &amp; Outreach</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="/static/vendor/tailwind.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
-  <header>
-    <h1>Local Lead-Matching &amp; Outreach Tool</h1>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen">
+  <header class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 shadow-sm">
+    <div class="max-w-6xl mx-auto px-5 pt-4 pb-3 flex items-center justify-between gap-4 flex-wrap">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl text-indigo-600 dark:text-indigo-400">◎</span>
+        <div>
+          <h1 class="text-base font-semibold leading-tight">Local Lead-Matching &amp; Outreach</h1>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Runs fully on your machine — no cloud required</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 text-sm">
+        <label for="cv-select" class="text-slate-500 dark:text-slate-400">Active CV</label>
+        <select id="cv-select" class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm"></select>
+      </div>
+    </div>
+    <nav class="max-w-6xl mx-auto px-5 flex gap-1 overflow-x-auto" id="tab-nav">
+      <button class="tab-btn" data-tab="upload">1. Companies</button>
+      <button class="tab-btn" data-tab="enrich">2. Enrich</button>
+      <button class="tab-btn" data-tab="cv">3. CV</button>
+      <button class="tab-btn" data-tab="match">4. Matches</button>
+      <button class="tab-btn" data-tab="drafts">5. Drafts</button>
+    </nav>
   </header>
 
-  <main>
-    <section id="upload-section">
-      <h2>1. Upload Apollo CSV</h2>
-      <form id="upload-form">
+  <main class="max-w-6xl mx-auto px-5 py-6">
+
+    <section id="tab-upload" class="tab-panel card">
+      <h2><span class="step">1</span> Upload Companies</h2>
+      <p class="hint">Upload your Apollo CSV export (needs at least <code>Company</code> and <code>Email</code> columns). Companies already in the system are matched by name and left untouched — this only adds new ones.</p>
+      <form id="upload-form" class="row">
         <input type="file" id="csv-file" accept=".csv" required />
-        <button type="submit">Upload &amp; Ingest</button>
+        <button type="submit" class="btn btn-primary">Upload &amp; Ingest</button>
       </form>
-      <p id="upload-result"></p>
+      <p id="upload-result" class="hint"></p>
     </section>
 
-    <section id="enrich-section">
-      <h2>2. Enrich Companies</h2>
-      <button id="start-enrich-btn">Start Enrichment</button>
-      <div id="enrich-progress"></div>
+    <section id="tab-enrich" class="tab-panel card">
+      <h2><span class="step">2</span> Enrich Companies</h2>
+      <div class="row">
+        <button id="start-enrich-btn" class="btn btn-primary">Start Enrichment</button>
+        <select id="status-filter">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="enriching">Enriching</option>
+          <option value="done">Done</option>
+          <option value="failed">Failed</option>
+        </select>
+        <button id="refresh-companies-btn" class="btn btn-ghost">Refresh</button>
+      </div>
+      <div id="enrich-progress" class="progress-line"></div>
+      <p class="hint">Fit scores in this table (if any) are shown for CV: <strong id="active-cv-label-enrich">—</strong></p>
+      <div class="table-scroll">
+        <table id="companies-table">
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Domain</th>
+              <th>Contacts</th>
+              <th>Status</th>
+              <th>Sector</th>
+              <th>Activity Summary</th>
+              <th>Size</th>
+              <th>Fit Score</th>
+              <th>Website</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="companies-pagination"></div>
     </section>
 
-    <section id="cv-section">
-      <h2>3. Upload Your CV</h2>
-      <form id="cv-form">
+    <section id="tab-cv" class="tab-panel card">
+      <h2><span class="step">3</span> Upload Your CV</h2>
+      <p class="hint">Uploading the exact same CV again just re-activates its existing profile — it won't be re-analyzed. Different CVs are kept side by side; switch between them with the "Active CV" selector at the top.</p>
+      <form id="cv-form" class="row">
         <input type="file" id="cv-file" accept=".pdf,.txt" required />
-        <button type="submit">Upload &amp; Analyze</button>
+        <button type="submit" class="btn btn-primary">Upload &amp; Analyze</button>
       </form>
-      <p id="cv-status"></p>
-      <div id="cv-profile"></div>
+      <p id="cv-status" class="hint"></p>
+      <div id="cv-profile" class="profile-grid"></div>
     </section>
 
-    <section id="match-section">
-      <h2>4. Rank Companies by Fit</h2>
-      <button id="start-match-btn">Start Matching</button>
-      <div id="match-progress"></div>
-      <table id="ranked-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>Company</th>
-            <th>Fit Score</th>
-            <th>Sector</th>
-            <th>Activity Summary</th>
-            <th>Why This Fits</th>
-            <th>Contacts</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <button id="generate-drafts-btn">Generate Drafts for Selected</button>
+    <section id="tab-match" class="tab-panel card">
+      <h2><span class="step">4</span> Rank Companies by Fit</h2>
+      <div class="row">
+        <button id="start-match-btn" class="btn btn-primary">Start Matching</button>
+      </div>
+      <div id="match-progress" class="progress-line"></div>
+      <p class="hint">Showing fit scores for CV: <strong id="active-cv-label-match">—</strong>. Matching a different CV never overwrites these — switch the active CV above to score/view against another one.</p>
+      <div class="table-scroll">
+        <table id="ranked-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Company</th>
+              <th>Fit Score</th>
+              <th>Sector</th>
+              <th>Activity Summary</th>
+              <th>Why This Fits</th>
+              <th>Contacts</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="ranked-pagination"></div>
+      <button id="generate-drafts-btn" class="btn btn-primary mt-3">Generate Drafts for Selected</button>
     </section>
 
-    <section id="drafts-section">
-      <h2>5. Outreach Drafts</h2>
-      <div id="drafts-progress"></div>
-      <div>
-        <a id="export-csv-link" href="/api/drafts/export.csv">Export all as CSV</a>
-        &nbsp;|&nbsp;
-        <a id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
+    <section id="tab-drafts" class="tab-panel card">
+      <h2><span class="step">5</span> Outreach Drafts</h2>
+      <div id="drafts-progress" class="progress-line"></div>
+      <div class="row">
+        <a class="btn btn-ghost" id="export-csv-link" href="/api/drafts/export.csv">Export all as CSV</a>
+        <a class="btn btn-ghost" id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
       </div>
       <div id="drafts-list"></div>
     </section>
 
-    <section id="companies-section">
-      <h2>Companies</h2>
-      <button id="refresh-companies-btn">Refresh</button>
-      <table id="companies-table">
-        <thead>
-          <tr>
-            <th>Company</th>
-            <th>Domain</th>
-            <th>Contacts</th>
-            <th>Status</th>
-            <th>Sector</th>
-            <th>Activity Summary</th>
-            <th>Size</th>
-            <th>Fit Score</th>
-            <th>Website</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
   </main>
 
   <script src="/static/app.js"></script>

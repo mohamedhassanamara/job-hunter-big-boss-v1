@@ -1,7 +1,7 @@
 import threading
 from datetime import datetime, timezone
 
-from app.cv import get_profile
+from app.cv import get_active_profile
 from app.db import get_conn
 from app.llm import OllamaError, generate, parse_json_response
 
@@ -55,7 +55,7 @@ def _set_state(**kwargs):
         _state.update(kwargs)
 
 
-def _draft_one(conn, profile: dict, contact: dict, company: dict) -> None:
+def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     contact_name = f"{contact['first_name']} {contact['last_name']}".strip() or "there"
 
@@ -82,33 +82,35 @@ def _draft_one(conn, profile: dict, contact: dict, company: dict) -> None:
         body = parsed["body"]
     except (OllamaError, ValueError, KeyError) as e:
         conn.execute(
-            "INSERT INTO email_drafts (contact_id, company_id, status, error, created_at, updated_at) "
-            "VALUES (?, ?, 'failed', ?, ?, ?) "
+            "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, status, error, "
+            "created_at, updated_at) VALUES (?, ?, ?, 'failed', ?, ?, ?) "
             "ON CONFLICT(contact_id) DO UPDATE SET "
-            "status='failed', error=excluded.error, updated_at=excluded.updated_at",
-            (contact["id"], company["id"], str(e), now, now),
+            "cv_profile_id=excluded.cv_profile_id, status='failed', error=excluded.error, "
+            "updated_at=excluded.updated_at",
+            (contact["id"], company["id"], cv_profile_id, str(e), now, now),
         )
         return
 
     conn.execute(
-        "INSERT INTO email_drafts (contact_id, company_id, subject, body, status, error, "
-        "created_at, updated_at) VALUES (?, ?, ?, ?, 'drafted', NULL, ?, ?) "
+        "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, subject, body, status, "
+        "error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'drafted', NULL, ?, ?) "
         "ON CONFLICT(contact_id) DO UPDATE SET "
-        "subject=excluded.subject, body=excluded.body, status='drafted', error=NULL, "
-        "updated_at=excluded.updated_at",
-        (contact["id"], company["id"], subject, body, now, now),
+        "cv_profile_id=excluded.cv_profile_id, subject=excluded.subject, body=excluded.body, "
+        "status='drafted', error=NULL, updated_at=excluded.updated_at",
+        (contact["id"], company["id"], cv_profile_id, subject, body, now, now),
     )
 
 
-def _run_drafting(company_ids: list[int], profile: dict):
+def _run_drafting(company_ids: list[int], cv_profile_id: int, profile: dict):
     with get_conn() as conn:
         placeholders = ",".join("?" * len(company_ids))
         companies = {
             row["id"]: dict(row)
             for row in conn.execute(
-                f"SELECT id, name, activity_summary, fit_rationale FROM companies "
-                f"WHERE id IN ({placeholders})",
-                company_ids,
+                f"SELECT co.id, co.name, co.activity_summary, fs.fit_rationale FROM companies co "
+                f"LEFT JOIN fit_scores fs ON fs.company_id = co.id AND fs.cv_profile_id = ? "
+                f"WHERE co.id IN ({placeholders})",
+                [cv_profile_id, *company_ids],
             ).fetchall()
         }
         contacts = [
@@ -134,16 +136,17 @@ def _run_drafting(company_ids: list[int], profile: dict):
             continue
         with get_conn() as conn:
             try:
-                _draft_one(conn, profile, contact, company)
+                _draft_one(conn, cv_profile_id, profile, contact, company)
             except Exception as e:  # noqa: BLE001 - keep the pipeline alive across bad contacts
                 conn.execute(
-                    "INSERT INTO email_drafts (contact_id, company_id, status, error, "
-                    "created_at, updated_at) VALUES (?, ?, 'failed', ?, ?, ?) "
-                    "ON CONFLICT(contact_id) DO UPDATE SET status='failed', error=excluded.error, "
-                    "updated_at=excluded.updated_at",
+                    "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, status, "
+                    "error, created_at, updated_at) VALUES (?, ?, ?, 'failed', ?, ?, ?) "
+                    "ON CONFLICT(contact_id) DO UPDATE SET cv_profile_id=excluded.cv_profile_id, "
+                    "status='failed', error=excluded.error, updated_at=excluded.updated_at",
                     (
                         contact["id"],
                         company["id"],
+                        cv_profile_id,
                         f"Unexpected error: {e}",
                         datetime.now(timezone.utc).isoformat(),
                         datetime.now(timezone.utc).isoformat(),
@@ -163,7 +166,7 @@ def start_drafting(company_ids: list[int]) -> tuple[bool, str | None]:
         if _state["running"]:
             return False, "Draft generation is already running."
 
-    profile = get_profile()
+    profile = get_active_profile()
     if not profile:
         return False, "No CV uploaded yet. Upload a CV first."
 
@@ -172,7 +175,9 @@ def start_drafting(company_ids: list[int]) -> tuple[bool, str | None]:
             return False, "Draft generation is already running."
         _state["running"] = True
 
-    thread = threading.Thread(target=_run_drafting, args=(company_ids, profile), daemon=True)
+    thread = threading.Thread(
+        target=_run_drafting, args=(company_ids, profile["id"], profile), daemon=True
+    )
     thread.start()
     return True, None
 

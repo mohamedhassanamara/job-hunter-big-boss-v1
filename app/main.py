@@ -8,7 +8,16 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import BASE_DIR
-from app.cv import build_profile, extract_text, get_profile, save_profile
+from app.cv import (
+    activate_profile,
+    build_profile,
+    extract_text,
+    find_by_hash,
+    get_active_profile,
+    hash_text,
+    list_profiles,
+    save_profile,
+)
 from app.db import get_conn, init_db
 from app.drafts import get_status as get_draft_status
 from app.drafts import list_drafts, start_drafting, update_draft
@@ -17,7 +26,7 @@ from app.enrichment import start_enrichment
 from app.ingest import ingest_csv
 from app.llm import OllamaError
 from app.matching import get_status as get_match_status
-from app.matching import reset_scores, start_matching
+from app.matching import start_matching
 
 app = FastAPI(title="Local Lead-Matching & Outreach Tool")
 
@@ -44,30 +53,78 @@ async def upload_csv(file: UploadFile = File(...)):
     return result
 
 
+def _active_cv_id() -> int | None:
+    profile = get_active_profile()
+    return profile["id"] if profile else None
+
+
 @app.get("/api/companies")
-def list_companies():
+def list_companies(page: int = 1, page_size: int = 50, status: str | None = None):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    offset = (page - 1) * page_size
+    cv_id = _active_cv_id()
+
+    where = ""
+    params: list = [cv_id]
+    if status:
+        where = "WHERE c.enrichment_status = ?"
+        params.append(status)
+
     with get_conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM companies c {where}", params[1:] if where else []
+        ).fetchone()["n"]
         rows = conn.execute(
-            "SELECT c.id, c.name, c.domain, c.website_url, c.sector, "
-            "c.activity_summary, c.size_signal, c.enrichment_status, c.enrichment_error, "
-            "c.fit_status, c.fit_score, c.fit_rationale, "
-            "(SELECT COUNT(*) FROM contacts WHERE contacts.company_id = c.id) AS contact_count "
-            "FROM companies c ORDER BY c.name COLLATE NOCASE"
+            f"SELECT c.id, c.name, c.domain, c.website_url, c.sector, "
+            f"c.activity_summary, c.size_signal, c.enrichment_status, c.enrichment_error, "
+            f"fs.fit_status, fs.fit_score, fs.fit_rationale, "
+            f"(SELECT COUNT(*) FROM contacts WHERE contacts.company_id = c.id) AS contact_count "
+            f"FROM companies c "
+            f"LEFT JOIN fit_scores fs ON fs.company_id = c.id AND fs.cv_profile_id = ? "
+            f"{where} "
+            f"ORDER BY c.name COLLATE NOCASE LIMIT ? OFFSET ?",
+            [*params, page_size, offset],
         ).fetchall()
-    return [dict(r) for r in rows]
+
+    return {
+        "items": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @app.get("/api/companies/ranked")
-def list_ranked_companies():
+def list_ranked_companies(page: int = 1, page_size: int = 50):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+    offset = (page - 1) * page_size
+    cv_id = _active_cv_id()
+    if cv_id is None:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
     with get_conn() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM fit_scores WHERE cv_profile_id = ? AND fit_status = 'scored'",
+            (cv_id,),
+        ).fetchone()["n"]
         rows = conn.execute(
             "SELECT c.id, c.name, c.domain, c.website_url, c.sector, "
-            "c.activity_summary, c.size_signal, c.fit_score, c.fit_rationale, "
+            "c.activity_summary, c.size_signal, fs.fit_score, fs.fit_rationale, "
             "(SELECT COUNT(*) FROM contacts WHERE contacts.company_id = c.id) AS contact_count "
-            "FROM companies c WHERE c.fit_status = 'scored' "
-            "ORDER BY c.fit_score DESC"
+            "FROM fit_scores fs JOIN companies c ON c.id = fs.company_id "
+            "WHERE fs.cv_profile_id = ? AND fs.fit_status = 'scored' "
+            "ORDER BY fs.fit_score DESC LIMIT ? OFFSET ?",
+            (cv_id, page_size, offset),
         ).fetchall()
-    return [dict(r) for r in rows]
+
+    return {
+        "items": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @app.get("/api/companies/{company_id}/contacts")
@@ -103,6 +160,12 @@ async def upload_cv(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    content_hash = hash_text(text)
+    existing = find_by_hash(content_hash)
+    if existing:
+        activate_profile(existing["id"])
+        return {**existing, "reused": True}
+
     try:
         parsed = build_profile(text)
     except OllamaError as e:
@@ -112,17 +175,29 @@ async def upload_cv(file: UploadFile = File(...)):
             status_code=502, detail=f"Model returned an unparseable profile: {e}"
         ) from e
 
-    save_profile(file.filename, text, parsed)
-    reset_scores()  # a new CV invalidates any previous fit scoring
-    return get_profile()
+    profile = save_profile(file.filename, text, content_hash, parsed)
+    return {**profile, "reused": False}
 
 
 @app.get("/api/cv/profile")
 def cv_profile():
-    profile = get_profile()
+    profile = get_active_profile()
     if not profile:
         raise HTTPException(status_code=404, detail="No CV uploaded yet.")
     return profile
+
+
+@app.get("/api/cv/profiles")
+def cv_profiles():
+    return list_profiles()
+
+
+@app.post("/api/cv/profiles/{profile_id}/activate")
+def cv_activate(profile_id: int):
+    ok = activate_profile(profile_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="CV profile not found.")
+    return get_active_profile()
 
 
 @app.post("/api/match/start")

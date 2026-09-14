@@ -1,7 +1,7 @@
 import threading
 from datetime import datetime, timezone
 
-from app.cv import get_profile
+from app.cv import get_active_profile
 from app.db import get_conn
 from app.llm import OllamaError, generate, parse_json_response
 
@@ -38,6 +38,7 @@ above (match company_id exactly):
 _state_lock = threading.Lock()
 _state = {
     "running": False,
+    "cv_profile_id": None,
     "total": 0,
     "done": 0,
     "started_at": None,
@@ -71,9 +72,21 @@ def _format_companies_block(companies: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _score_batch(conn, profile: dict, batch: list[dict]) -> None:
+def _upsert_fit(conn, company_id: int, cv_profile_id: int, status: str, score=None, rationale=None):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO fit_scores (company_id, cv_profile_id, fit_status, fit_score, fit_rationale, "
+        "updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(company_id, cv_profile_id) DO UPDATE SET "
+        "fit_status = excluded.fit_status, fit_score = excluded.fit_score, "
+        "fit_rationale = excluded.fit_rationale, updated_at = excluded.updated_at",
+        (company_id, cv_profile_id, status, score, rationale, now),
+    )
+
+
+def _score_batch(conn, cv_profile_id: int, profile: dict, batch: list[dict]) -> None:
     for c in batch:
-        conn.execute("UPDATE companies SET fit_status = 'scoring' WHERE id = ?", (c["id"],))
+        _upsert_fit(conn, c["id"], cv_profile_id, "scoring")
     conn.commit()
 
     prompt = PROMPT_TEMPLATE.format(
@@ -90,10 +103,7 @@ def _score_batch(conn, profile: dict, batch: list[dict]) -> None:
         parsed = parse_json_response(raw)
     except (OllamaError, ValueError) as e:
         for c in batch:
-            conn.execute(
-                "UPDATE companies SET fit_status = 'failed', fit_rationale = ? WHERE id = ?",
-                (f"Batch scoring error: {e}", c["id"]),
-            )
+            _upsert_fit(conn, c["id"], cv_profile_id, "failed", rationale=f"Batch scoring error: {e}")
         return
 
     scores_by_id = {}
@@ -106,35 +116,34 @@ def _score_batch(conn, profile: dict, batch: list[dict]) -> None:
     for c in batch:
         result = scores_by_id.get(c["id"])
         if not result:
-            conn.execute(
-                "UPDATE companies SET fit_status = 'failed', "
-                "fit_rationale = 'Model did not return a score for this company.' WHERE id = ?",
-                (c["id"],),
+            _upsert_fit(
+                conn, c["id"], cv_profile_id, "failed",
+                rationale="Model did not return a score for this company.",
             )
             continue
         try:
             score = max(0, min(100, int(result.get("score", 0))))
         except (TypeError, ValueError):
             score = 0
-        conn.execute(
-            "UPDATE companies SET fit_status = 'scored', fit_score = ?, fit_rationale = ? "
-            "WHERE id = ?",
-            (score, result.get("rationale", ""), c["id"]),
-        )
+        _upsert_fit(conn, c["id"], cv_profile_id, "scored", score=score, rationale=result.get("rationale", ""))
 
 
-def _run_matching(profile: dict):
+def _run_matching(cv_profile_id: int, profile: dict):
     with get_conn() as conn:
         companies = [
             dict(row)
             for row in conn.execute(
-                "SELECT id, name, sector, activity_summary, size_signal FROM companies "
-                "WHERE enrichment_status = 'done' AND fit_status IN ('unscored', 'failed') "
-                "ORDER BY id"
+                "SELECT c.id, c.name, c.sector, c.activity_summary, c.size_signal FROM companies c "
+                "LEFT JOIN fit_scores fs ON fs.company_id = c.id AND fs.cv_profile_id = ? "
+                "WHERE c.enrichment_status = 'done' "
+                "AND (fs.id IS NULL OR fs.fit_status IN ('unscored', 'failed')) "
+                "ORDER BY c.id",
+                (cv_profile_id,),
             ).fetchall()
         ]
 
     _set_state(
+        cv_profile_id=cv_profile_id,
         total=len(companies),
         done=0,
         error=None,
@@ -145,13 +154,10 @@ def _run_matching(profile: dict):
     for batch in _chunk(companies, BATCH_SIZE):
         with get_conn() as conn:
             try:
-                _score_batch(conn, profile, batch)
+                _score_batch(conn, cv_profile_id, profile, batch)
             except Exception as e:  # noqa: BLE001 - keep the pipeline alive across bad batches
                 for c in batch:
-                    conn.execute(
-                        "UPDATE companies SET fit_status = 'failed', fit_rationale = ? WHERE id = ?",
-                        (f"Unexpected error: {e}", c["id"]),
-                    )
+                    _upsert_fit(conn, c["id"], cv_profile_id, "failed", rationale=f"Unexpected error: {e}")
         with _state_lock:
             _state["done"] += len(batch)
 
@@ -163,7 +169,7 @@ def start_matching() -> tuple[bool, str | None]:
         if _state["running"]:
             return False, "Matching is already running."
 
-    profile = get_profile()
+    profile = get_active_profile()
     if not profile:
         return False, "No CV uploaded yet. Upload a CV first."
 
@@ -172,15 +178,6 @@ def start_matching() -> tuple[bool, str | None]:
             return False, "Matching is already running."
         _state["running"] = True
 
-    thread = threading.Thread(target=_run_matching, args=(profile,), daemon=True)
+    thread = threading.Thread(target=_run_matching, args=(profile["id"], profile), daemon=True)
     thread.start()
     return True, None
-
-
-def reset_scores() -> None:
-    """Called when the CV profile changes, so stale scores don't linger."""
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE companies SET fit_status = 'unscored', fit_score = NULL, fit_rationale = NULL "
-            "WHERE fit_status != 'unscored'"
-        )

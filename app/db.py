@@ -17,9 +17,6 @@ CREATE TABLE IF NOT EXISTS companies (
     raw_scrape_text TEXT,
     enrichment_status TEXT NOT NULL DEFAULT 'pending',
     enrichment_error TEXT,
-    fit_status TEXT NOT NULL DEFAULT 'unscored',
-    fit_score INTEGER,
-    fit_rationale TEXT,
     updated_at TEXT
 );
 
@@ -32,28 +29,46 @@ CREATE TABLE IF NOT EXISTS contacts (
     email TEXT
 );
 
-CREATE TABLE IF NOT EXISTS email_drafts (
+-- One row per uploaded CV, identified by a hash of its extracted text so
+-- re-uploading the same CV is recognized instead of re-analyzed.
+CREATE TABLE IF NOT EXISTS cv_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contact_id INTEGER NOT NULL UNIQUE REFERENCES contacts(id),
-    company_id INTEGER NOT NULL REFERENCES companies(id),
-    subject TEXT,
-    body TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    error TEXT,
-    created_at TEXT,
-    updated_at TEXT
-);
-
--- Single-row table: only the most recently uploaded CV's profile is kept.
-CREATE TABLE IF NOT EXISTS cv_profile (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
     filename TEXT,
+    content_hash TEXT NOT NULL UNIQUE,
     raw_text TEXT,
     skills TEXT,
     experience_level TEXT,
     domains_worked_in TEXT,
     target_roles TEXT,
     target_sector_profile TEXT,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+-- Fit score is a property of a (company, CV) pair, not of the company alone,
+-- since the same company list can be matched against different CVs.
+CREATE TABLE IF NOT EXISTS fit_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    cv_profile_id INTEGER NOT NULL REFERENCES cv_profiles(id),
+    fit_status TEXT NOT NULL DEFAULT 'unscored',
+    fit_score INTEGER,
+    fit_rationale TEXT,
+    updated_at TEXT,
+    UNIQUE(company_id, cv_profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS email_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id INTEGER NOT NULL UNIQUE REFERENCES contacts(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    cv_profile_id INTEGER REFERENCES cv_profiles(id),
+    subject TEXT,
+    body TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    created_at TEXT,
     updated_at TEXT
 );
 """
@@ -76,19 +91,91 @@ def get_conn():
         conn.close()
 
 
-def _migrate(conn):
-    """Add columns introduced after a database file may already exist."""
-    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(companies)")}
-    for col, ddl in (
-        ("fit_status", "TEXT NOT NULL DEFAULT 'unscored'"),
-        ("fit_score", "INTEGER"),
-        ("fit_rationale", "TEXT"),
-    ):
-        if col not in existing_cols:
-            conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {ddl}")
+def _table_exists(conn, name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _columns(conn, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_legacy_single_cv(conn):
+    """Migrate a pre-multi-CV database: a single `cv_profile` row and
+    fit_status/fit_score/fit_rationale columns directly on `companies`."""
+    import hashlib
+
+    if "cv_profile_id" not in _columns(conn, "email_drafts"):
+        conn.execute("ALTER TABLE email_drafts ADD COLUMN cv_profile_id INTEGER REFERENCES cv_profiles(id)")
+
+    if not _table_exists(conn, "cv_profile"):
+        return
+
+    old_cv = conn.execute("SELECT * FROM cv_profile WHERE id = 1").fetchone()
+    company_cols = _columns(conn, "companies")
+    has_old_fit_cols = {"fit_status", "fit_score", "fit_rationale"} <= company_cols
+
+    if old_cv:
+        content_hash = hashlib.sha256((old_cv["raw_text"] or "").encode("utf-8")).hexdigest()
+        existing = conn.execute(
+            "SELECT id FROM cv_profiles WHERE content_hash = ?", (content_hash,)
+        ).fetchone()
+        if existing:
+            cv_profile_id = existing["id"]
+        else:
+            conn.execute("UPDATE cv_profiles SET is_active = 0")
+            cur = conn.execute(
+                "INSERT INTO cv_profiles (filename, content_hash, raw_text, skills, "
+                "experience_level, domains_worked_in, target_roles, target_sector_profile, "
+                "is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (
+                    old_cv["filename"],
+                    content_hash,
+                    old_cv["raw_text"],
+                    old_cv["skills"],
+                    old_cv["experience_level"],
+                    old_cv["domains_worked_in"],
+                    old_cv["target_roles"],
+                    old_cv["target_sector_profile"],
+                    old_cv["updated_at"],
+                    old_cv["updated_at"],
+                ),
+            )
+            cv_profile_id = cur.lastrowid
+
+        if has_old_fit_cols:
+            rows = conn.execute(
+                "SELECT id, fit_status, fit_score, fit_rationale, updated_at FROM companies "
+                "WHERE fit_status IS NOT NULL AND fit_status != 'unscored'"
+            ).fetchall()
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO fit_scores (company_id, cv_profile_id, fit_status, fit_score, "
+                    "fit_rationale, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(company_id, cv_profile_id) DO NOTHING",
+                    (r["id"], cv_profile_id, r["fit_status"], r["fit_score"], r["fit_rationale"], r["updated_at"]),
+                )
+
+        conn.execute(
+            "UPDATE email_drafts SET cv_profile_id = ? WHERE cv_profile_id IS NULL",
+            (cv_profile_id,),
+        )
+
+    conn.execute("DROP TABLE cv_profile")
+
+    if has_old_fit_cols:
+        for col in ("fit_status", "fit_score", "fit_rationale"):
+            try:
+                conn.execute(f"ALTER TABLE companies DROP COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # sqlite < 3.35: leave the now-unused column in place
 
 
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        _migrate(conn)
+        _migrate_legacy_single_cv(conn)

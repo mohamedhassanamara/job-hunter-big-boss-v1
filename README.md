@@ -31,19 +31,25 @@ every time you want to prep a new outreach batch (new CSV export / updated CV).
   is extracted (`pdfplumber` for PDFs) and sent to the local LLM, which returns
   skills, experience level, domains worked in, target roles, and a "target
   sector profile" paragraph describing what kinds of companies would value
-  this background. Stored as a single latest-CV row in SQLite; re-uploading
-  overwrites it.
-- **Phase 4 — Matching & Ranking**: done. Scores every enriched company against
-  the CV profile using the local LLM, batching several companies per call
-  (`BATCH_SIZE = 8` in `app/matching.py`) instead of one call per company —
-  the enrichment summaries are short, so a batch fits comfortably in context
-  while cutting the number of LLM round-trips roughly 8x. Each company gets a
-  0-100 fit score plus a one-sentence rationale, stored in SQLite. If a batch
+  this background. **Multiple CVs are supported side by side** (`cv_profiles`
+  table) — each CV is identified by a hash of its extracted text, so
+  re-uploading the exact same file just reactivates its existing profile
+  instantly, with no LLM call. Different CVs get their own profile row and
+  their own independent set of fit scores; switch which one is "active" with
+  the CV selector in the top bar.
+- **Phase 4 — Matching & Ranking**: done. Fit is a property of a
+  **(company, CV) pair** (`fit_scores` table), not of the company alone, so
+  scores never overwrite each other across CVs — matching against a second CV
+  doesn't touch the first CV's scores. Scores every enriched company against
+  the *active* CV profile using the local LLM, batching several companies per
+  call (`BATCH_SIZE = 8` in `app/matching.py`) instead of one call per
+  company — the enrichment summaries are short, so a batch fits comfortably
+  in context while cutting the number of LLM round-trips roughly 8x. Each
+  company gets a 0-100 fit score plus a one-sentence rationale. If a batch
   comes back incomplete or malformed (more likely with very small/weak local
   models), only the companies missing a score are marked `failed` — the rest
-  of the batch's scores are kept, and `failed`/`unscored` companies are picked
-  up again on the next "Start Matching" run. Re-uploading a CV resets all
-  scores to `unscored` since the fit basis changed.
+  of the batch's scores are kept, and `failed`/`unscored` (for the active CV)
+  companies are picked up again on the next "Start Matching" run.
 - **Phase 5 — Email Drafting**: done. Select companies from the ranked list and
   click "Generate Drafts for Selected" — one personalized outreach email is
   drafted per contact (via the local LLM) at each selected company, referencing
@@ -77,7 +83,8 @@ ollama serve   # if not already running as a background service
 python app.py
 ```
 
-Then open http://127.0.0.1:8000
+Then open http://127.0.0.1:8000. Each numbered step below is its own tab in
+the UI — click a tab to work through that step.
 
 1. Upload your Apollo CSV export (needs at least `Company` and `Email`
    columns; `First Name` / `Last Name` / `Title` are used if present).
@@ -88,12 +95,15 @@ Then open http://127.0.0.1:8000
    error message on failures — usually "couldn't find/fetch a website").
 4. Upload your CV (PDF or .txt) to get a fit profile: skills, experience
    level, domains worked in, target roles, and a target-sector-profile
-   paragraph. Re-uploading replaces the stored profile (and resets any
-   existing fit scores, since they're no longer valid against the old CV).
-5. Click "Start Matching" to score every enriched company against your CV
-   profile (0-100 fit score + one-line rationale), processed in batches of 8.
-   The ranked table sorts by fit score descending. Re-running only rescopes
-   companies that are still `unscored` or `failed`.
+   paragraph. Uploading a CV you've already uploaded before just reactivates
+   it (no re-analysis); uploading a genuinely different CV creates a new,
+   independent profile. Use the "Active CV" dropdown in the top bar to switch
+   between previously uploaded CVs at any time — each keeps its own fit
+   scores and drafts.
+5. Click "Start Matching" to score every enriched company against the
+   *active* CV profile (0-100 fit score + one-line rationale), processed in
+   batches of 8. The ranked table sorts by fit score descending. Re-running
+   only rescopes companies that are still `unscored`/`failed` for that CV.
 6. Check the box next to the companies you want to reach out to in the ranked
    table, then click "Generate Drafts for Selected". One draft per contact at
    each selected company appears in the Outreach Drafts section — edit the
@@ -101,7 +111,47 @@ Then open http://127.0.0.1:8000
    "Export all as .txt (zip)" to get files you can send manually.
 
 Re-uploading a CSV or re-running enrichment is safe: companies are matched by
-name, and only `pending`/`failed` companies are (re-)enriched.
+name, so re-uploading a CSV that includes already-enriched companies leaves
+them untouched — only genuinely new companies (or ones that previously
+`failed`) are (re-)enriched.
+
+## Data safety
+
+Everything lives in a single SQLite file at `DB_PATH` (`./data/app.db` by
+default) — it's written to disk on every change, so quitting the app or your
+terminal never loses data; it's simply there again next time you run
+`python app.py`. It's excluded from git (see `.gitignore`) so it's never
+committed, but that doesn't delete it from disk. Before any schema-changing
+update to this app, back up the file yourself if you want extra safety:
+
+```bash
+cp data/app.db data/backups/app.db.backup-$(date +%Y%m%d-%H%M%S)
+```
+
+## UI overview
+
+- Built with [Tailwind](https://tailwindcss.com) (the browser "Play CDN"
+  build, self-hosted at `static/vendor/tailwind.js` so no internet access is
+  needed at runtime after the initial one-time download) plus a small
+  `static/style.css` for repeated components (badges, cards, tables).
+- **Tabbed layout**: each of the 5 steps (Companies, Enrich, CV, Matches,
+  Drafts) is its own tab — only one is visible at a time, switched via the
+  nav bar under the header. Tab state lives in `static/app.js`'s `initTabs()`.
+- **Top bar**: shows the active CV and a dropdown to switch between every CV
+  you've ever uploaded.
+- **Which CV a score belongs to**: fit scores are only ever shown for the
+  *currently active* CV — both the Enrich tab's companies table and the
+  Matches tab's ranked table display a line reading "Fit scores shown are for
+  CV: `<filename>`" right above the table, so it's always explicit. Switch
+  the active CV in the top bar and both tables' fit scores update to that
+  CV's own independent scores.
+- **Companies table** (step 2) and **ranked matches table** (step 4) are
+  paginated (25 per page) since a real lead list can run into the hundreds —
+  use the status filter on the companies table to jump straight to `failed`
+  ones worth retrying.
+- Status/fit values are shown as colored badges (green = done/scored, amber =
+  in progress, red = failed, grey = pending/unscored) and fit scores are
+  color-coded (green ≥ 80, amber ≥ 50, grey below).
 
 ## Troubleshooting
 
@@ -121,7 +171,12 @@ name, and only `pending`/`failed` companies are (re-)enriched.
 Set in `.env` (see `.env.example`):
 
 - `OLLAMA_URL` — default `http://localhost:11434`
-- `OLLAMA_MODEL` — default `llama3.1`
+- `OLLAMA_MODEL` — default `llama3.1`. Use a model you've pulled locally
+  (`ollama pull llama3.1`, then `ollama list` to confirm). **Don't use a
+  `-cloud`-suffixed model name** (e.g. `gemma4:31b-cloud`) unless you've run
+  `ollama signin` — those route through Ollama's cloud service and return
+  `401 Unauthorized` otherwise, breaking the "runs entirely locally" goal of
+  this app anyway.
 - `DB_PATH` — default `./data/app.db`
 
 ## Notes on the search/scraping approach
