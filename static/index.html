@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lead Matching &amp; Outreach</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Local Lead-Matching &amp; Outreach Tool</h1>
+  </header>
+
+  <main>
+    <section id="upload-section">
+      <h2>1. Upload Apollo CSV</h2>
+      <form id="upload-form">
+        <input type="file" id="csv-file" accept=".csv" required />
+        <button type="submit">Upload &amp; Ingest</button>
+      </form>
+      <p id="upload-result"></p>
+    </section>
+
+    <section id="enrich-section">
+      <h2>2. Enrich Companies</h2>
+      <button id="start-enrich-btn">Start Enrichment</button>
+      <div id="enrich-progress"></div>
+    </section>
+
+    <section id="cv-section">
+      <h2>3. Upload Your CV</h2>
+      <form id="cv-form">
+        <input type="file" id="cv-file" accept=".pdf,.txt" required />
+        <button type="submit">Upload &amp; Analyze</button>
+      </form>
+      <p id="cv-status"></p>
+      <div id="cv-profile"></div>
+    </section>
+
+    <section id="match-section">
+      <h2>4. Rank Companies by Fit</h2>
+      <button id="start-match-btn">Start Matching</button>
+      <div id="match-progress"></div>
+      <table id="ranked-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Company</th>
+            <th>Fit Score</th>
+            <th>Sector</th>
+            <th>Activity Summary</th>
+            <th>Why This Fits</th>
+            <th>Contacts</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <button id="generate-drafts-btn">Generate Drafts for Selected</button>
+    </section>
+
+    <section id="drafts-section">
+      <h2>5. Outreach Drafts</h2>
+      <div id="drafts-progress"></div>
+      <div>
+        <a id="export-csv-link" href="/api/drafts/export.csv">Export all as CSV</a>
+        &nbsp;|&nbsp;
+        <a id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
+      </div>
+      <div id="drafts-list"></div>
+    </section>
+
+    <section id="companies-section">
+      <h2>Companies</h2>
+      <button id="refresh-companies-btn">Refresh</button>
+      <table id="companies-table">
+        <thead>
+          <tr>
+            <th>Company</th>
+            <th>Domain</th>
+            <th>Contacts</th>
+            <th>Status</th>
+            <th>Sector</th>
+            <th>Activity Summary</th>
+            <th>Size</th>
+            <th>Fit Score</th>
+            <th>Website</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
