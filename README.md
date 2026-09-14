@@ -93,13 +93,13 @@ the UI — click a tab to work through that step.
 3. Review the companies table: sector, activity summary, size signal, and
    enrichment status (`pending` / `enriching` / `done` / `failed`, with an
    error message on failures — usually "couldn't find/fetch a website").
-4. Upload your CV (PDF or .txt) to get a fit profile: skills, experience
-   level, domains worked in, target roles, and a target-sector-profile
-   paragraph. Uploading a CV you've already uploaded before just reactivates
-   it (no re-analysis); uploading a genuinely different CV creates a new,
-   independent profile. Use the "Active CV" dropdown in the top bar to switch
-   between previously uploaded CVs at any time — each keeps its own fit
-   scores and drafts.
+4. On the Profile tab, upload your CV (PDF or .txt) to get a fit profile:
+   skills, experience level, domains worked in, target roles, and a
+   target-sector-profile paragraph. Uploading a CV you've already uploaded
+   before just reactivates it (no re-analysis); uploading a genuinely
+   different CV creates a new, independent profile, shown alongside the
+   others in the CV card list on the left — click any card to make it
+   active. Each CV keeps its own fit scores and drafts.
 5. Click "Start Matching" to score every enriched company against the
    *active* CV profile (0-100 fit score + one-line rationale), processed in
    batches of 8. The ranked table sorts by fit score descending. Re-running
@@ -132,26 +132,38 @@ cp data/app.db data/backups/app.db.backup-$(date +%Y%m%d-%H%M%S)
 
 - Built with [Tailwind](https://tailwindcss.com) (the browser "Play CDN"
   build, self-hosted at `static/vendor/tailwind.js` so no internet access is
-  needed at runtime after the initial one-time download) plus a small
-  `static/style.css` for repeated components (badges, cards, tables).
-- **Tabbed layout**: each of the 5 steps (Companies, Enrich, CV, Matches,
+  needed at runtime after the initial one-time download). All component
+  styling (cards, pills, badges, buttons, progress bars) is defined once via
+  `@apply` in a `<style type="text/tailwindcss">` block at the top of
+  `static/index.html` — there's no separate CSS file.
+- **Tabbed layout**: each of the 5 steps (Companies, Enrich, Profile, Matches,
   Drafts) is its own tab — only one is visible at a time, switched via the
-  nav bar under the header. Tab state lives in `static/app.js`'s `initTabs()`.
-- **Top bar**: shows the active CV and a dropdown to switch between every CV
-  you've ever uploaded.
+  pill-style nav bar under the header. Tab state lives in `static/app.js`'s
+  `initTabs()`.
+- **Stats dashboard**: four live counters above the tabs (Total Companies,
+  Enriched, Scored for the active CV, Drafts Ready) so you always have an
+  at-a-glance read on where a batch stands.
+- **Profile tab** (step 3): a real profile view instead of a plain form — a
+  card list of every CV you've uploaded on the left (click one to make it
+  active), and the active CV's full profile on the right as a proper resume
+  summary: experience level as a badge, skills/domains/target roles as pill
+  tags, and the target sector profile as a highlighted quote block. The top
+  bar shows the active CV's name at a glance from any tab.
 - **Which CV a score belongs to**: fit scores are only ever shown for the
   *currently active* CV — both the Enrich tab's companies table and the
   Matches tab's ranked table display a line reading "Fit scores shown are for
   CV: `<filename>`" right above the table, so it's always explicit. Switch
-  the active CV in the top bar and both tables' fit scores update to that
-  CV's own independent scores.
+  the active CV from the Profile tab's card list and both tables' fit scores
+  update to that CV's own independent scores.
 - **Companies table** (step 2) and **ranked matches table** (step 4) are
   paginated (25 per page) since a real lead list can run into the hundreds —
   use the status filter on the companies table to jump straight to `failed`
   ones worth retrying.
-- Status/fit values are shown as colored badges (green = done/scored, amber =
-  in progress, red = failed, grey = pending/unscored) and fit scores are
-  color-coded (green ≥ 80, amber ≥ 50, grey below).
+- Status/fit values are shown as colored pill badges (green = done/scored,
+  amber = in progress, red = failed, grey = pending/unscored) and fit scores
+  are color-coded (green ≥ 80, amber ≥ 50, grey below). Long-running steps
+  (enrich/match/draft) show a slim animated progress bar in addition to the
+  X/Y text.
 
 ## Troubleshooting
 

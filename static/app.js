@@ -2,20 +2,27 @@ const uploadForm = document.getElementById("upload-form");
 const uploadResult = document.getElementById("upload-result");
 const startEnrichBtn = document.getElementById("start-enrich-btn");
 const enrichProgress = document.getElementById("enrich-progress");
+const enrichProgressTrack = document.getElementById("enrich-progress-track");
+const enrichProgressFill = document.getElementById("enrich-progress-fill");
 const refreshBtn = document.getElementById("refresh-companies-btn");
 const statusFilter = document.getElementById("status-filter");
 const companiesTbody = document.querySelector("#companies-table tbody");
 const companiesPagination = document.getElementById("companies-pagination");
 const cvForm = document.getElementById("cv-form");
 const cvStatus = document.getElementById("cv-status");
-const cvProfileDiv = document.getElementById("cv-profile");
-const cvSelect = document.getElementById("cv-select");
+const cvListDiv = document.getElementById("cv-list");
+const cvProfileDetailDiv = document.getElementById("cv-profile-detail");
+const activeCvChipName = document.getElementById("active-cv-chip-name");
 const startMatchBtn = document.getElementById("start-match-btn");
 const matchProgress = document.getElementById("match-progress");
+const matchProgressTrack = document.getElementById("match-progress-track");
+const matchProgressFill = document.getElementById("match-progress-fill");
 const rankedTbody = document.querySelector("#ranked-table tbody");
 const rankedPagination = document.getElementById("ranked-pagination");
 const generateDraftsBtn = document.getElementById("generate-drafts-btn");
 const draftsProgress = document.getElementById("drafts-progress");
+const draftsProgressTrack = document.getElementById("drafts-progress-track");
+const draftsProgressFill = document.getElementById("drafts-progress-fill");
 const draftsListDiv = document.getElementById("drafts-list");
 const activeCvLabelEnrich = document.getElementById("active-cv-label-enrich");
 const activeCvLabelMatch = document.getElementById("active-cv-label-match");
@@ -64,6 +71,24 @@ function fitScoreClass(score) {
   return "low";
 }
 
+function formatDate(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return iso;
+  }
+}
+
+function setProgressBar(track, fill, done, total, running) {
+  if (total > 0 && running) {
+    track.hidden = false;
+    fill.style.width = `${Math.round((done / total) * 100)}%`;
+  } else {
+    track.hidden = true;
+  }
+}
+
 function renderPagination(container, total, page, pageSize, onChange) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   container.innerHTML = `
@@ -73,6 +98,25 @@ function renderPagination(container, total, page, pageSize, onChange) {
   `;
   container.querySelector('[data-dir="prev"]').addEventListener("click", () => onChange(page - 1));
   container.querySelector('[data-dir="next"]').addEventListener("click", () => onChange(page + 1));
+}
+
+/* ---------- Stats dashboard ---------- */
+
+async function loadStats() {
+  try {
+    const [all, done, ranked, drafts] = await Promise.all([
+      fetch("/api/companies?page=1&page_size=1").then((r) => r.json()),
+      fetch("/api/companies?page=1&page_size=1&status=done").then((r) => r.json()),
+      fetch("/api/companies/ranked?page=1&page_size=1").then((r) => r.json()),
+      fetch("/api/drafts").then((r) => r.json()),
+    ]);
+    document.getElementById("stat-total").textContent = all.total;
+    document.getElementById("stat-enriched").textContent = done.total;
+    document.getElementById("stat-scored").textContent = ranked.total;
+    document.getElementById("stat-drafts").textContent = drafts.filter((d) => d.status === "drafted").length;
+  } catch {
+    /* best-effort dashboard; ignore transient errors */
+  }
 }
 
 /* ---------- CSV upload / enrichment ---------- */
@@ -96,6 +140,7 @@ uploadForm.addEventListener("submit", async (e) => {
       ". Already-enriched companies are left untouched — only new/failed ones need enrichment.";
     companiesPage = 1;
     loadCompanies();
+    loadStats();
   } catch (err) {
     uploadResult.textContent = `Error: ${err.message}`;
   }
@@ -135,8 +180,10 @@ async function pollStatus() {
   } else if (!status.running) {
     enrichProgress.textContent = "Nothing to enrich — all companies already processed.";
   }
+  setProgressBar(enrichProgressTrack, enrichProgressFill, status.done, status.total, status.running);
 
   loadCompanies();
+  loadStats();
 
   if (!status.running && pollHandle) {
     clearInterval(pollHandle);
@@ -153,16 +200,17 @@ async function loadCompanies() {
   companiesTbody.innerHTML = "";
   for (const c of data.items) {
     const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 dark:hover:bg-slate-700/40";
     tr.innerHTML = `
-      <td>${escapeHtml(c.name)}</td>
-      <td>${escapeHtml(c.domain || "")}</td>
-      <td>${c.contact_count}</td>
-      <td>${statusBadge(c.enrichment_status)}${c.enrichment_error ? `<div class="hint">${escapeHtml(c.enrichment_error)}</div>` : ""}</td>
-      <td>${escapeHtml(c.sector || "")}</td>
-      <td>${escapeHtml(c.activity_summary || "")}</td>
-      <td>${escapeHtml(c.size_signal || "")}</td>
-      <td>${c.fit_score !== null && c.fit_score !== undefined ? `<span class="fit-score ${fitScoreClass(c.fit_score)}">${c.fit_score}</span>` : ""}</td>
-      <td>${c.website_url ? `<a href="${escapeHtml(c.website_url)}" target="_blank" rel="noopener">link</a>` : ""}</td>
+      <td class="td-cell font-medium text-slate-900 dark:text-white">${escapeHtml(c.name)}</td>
+      <td class="td-cell">${escapeHtml(c.domain || "")}</td>
+      <td class="td-cell">${c.contact_count}</td>
+      <td class="td-cell">${statusBadge(c.enrichment_status)}${c.enrichment_error ? `<div class="text-xs text-slate-400 mt-1">${escapeHtml(c.enrichment_error)}</div>` : ""}</td>
+      <td class="td-cell">${escapeHtml(c.sector || "")}</td>
+      <td class="td-cell">${escapeHtml(c.activity_summary || "")}</td>
+      <td class="td-cell">${escapeHtml(c.size_signal || "")}</td>
+      <td class="td-cell">${c.fit_score !== null && c.fit_score !== undefined ? `<span class="fit-score ${fitScoreClass(c.fit_score)}">${c.fit_score}</span>` : ""}</td>
+      <td class="td-cell">${c.website_url ? `<a class="text-indigo-600 dark:text-indigo-400 hover:underline" href="${escapeHtml(c.website_url)}" target="_blank" rel="noopener">link</a>` : ""}</td>
     `;
     companiesTbody.appendChild(tr);
   }
@@ -172,7 +220,7 @@ async function loadCompanies() {
   });
 }
 
-/* ---------- CV ---------- */
+/* ---------- CV / Profile ---------- */
 
 cvForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -183,7 +231,6 @@ cvForm.addEventListener("submit", async (e) => {
   formData.append("file", fileInput.files[0]);
 
   cvStatus.textContent = "Analyzing CV with local LLM (this can take a bit)...";
-  cvProfileDiv.innerHTML = "";
   try {
     const resp = await fetch("/api/cv/upload", { method: "POST", body: formData });
     const data = await resp.json();
@@ -191,62 +238,92 @@ cvForm.addEventListener("submit", async (e) => {
     cvStatus.textContent = data.reused
       ? `This CV was already uploaded before — reactivated existing profile for ${data.filename} (not re-analyzed).`
       : `New profile built from ${data.filename}.`;
-    renderCvProfile(data);
-    loadCvProfiles();
+    await loadCvList();
+    await loadCvProfile();
     companiesPage = 1;
     rankedPage = 1;
     loadCompanies();
     loadRankedCompanies();
+    loadStats();
   } catch (err) {
     cvStatus.textContent = `Error: ${err.message}`;
   }
 });
 
-cvSelect.addEventListener("change", async () => {
-  const id = cvSelect.value;
-  if (!id) return;
-  await fetch(`/api/cv/profiles/${id}/activate`, { method: "POST" });
-  loadCvProfile();
-  companiesPage = 1;
-  rankedPage = 1;
-  loadCompanies();
-  loadRankedCompanies();
-});
-
-function renderCvProfile(profile) {
-  cvProfileDiv.innerHTML = `
-    <div class="profile-field"><h4>Experience level</h4><p>${escapeHtml(profile.experience_level || "")}</p></div>
-    <div class="profile-field"><h4>Skills</h4><p>${(profile.skills || []).map(escapeHtml).join(", ")}</p></div>
-    <div class="profile-field"><h4>Domains worked in</h4><p>${(profile.domains_worked_in || []).map(escapeHtml).join(", ")}</p></div>
-    <div class="profile-field"><h4>Target roles</h4><p>${(profile.target_roles || []).map(escapeHtml).join(", ")}</p></div>
-    <div class="profile-field wide"><h4>Target sector profile</h4><p>${escapeHtml(profile.target_sector_profile || "")}</p></div>
+function renderCvProfileDetail(profile) {
+  const pills = (items, cls) => (items || []).map((s) => `<span class="${cls}">${escapeHtml(s)}</span>`).join(" ");
+  cvProfileDetailDiv.innerHTML = `
+    <div class="card p-5">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
+        <div>
+          <h3 class="text-base font-semibold">${escapeHtml(profile.filename)}</h3>
+          <p class="text-xs text-slate-400">Uploaded ${formatDate(profile.created_at)}</p>
+        </div>
+        <span class="pill-indigo">${escapeHtml(profile.experience_level || "unknown level")}</span>
+      </div>
+      <div class="profile-field mb-4">
+        <h4>Skills</h4>
+        <div class="flex flex-wrap gap-1.5">${pills(profile.skills, "pill-slate") || '<span class="text-sm text-slate-400">—</span>'}</div>
+      </div>
+      <div class="profile-field mb-4">
+        <h4>Domains worked in</h4>
+        <div class="flex flex-wrap gap-1.5">${pills(profile.domains_worked_in, "pill-slate") || '<span class="text-sm text-slate-400">—</span>'}</div>
+      </div>
+      <div class="profile-field mb-4">
+        <h4>Target roles</h4>
+        <div class="flex flex-wrap gap-1.5">${pills(profile.target_roles, "pill-green") || '<span class="text-sm text-slate-400">—</span>'}</div>
+      </div>
+      <div class="profile-field">
+        <h4>Target sector profile</h4>
+        <p class="text-sm leading-relaxed border-l-2 border-indigo-400 pl-3 italic text-slate-600 dark:text-slate-300">${escapeHtml(profile.target_sector_profile || "—")}</p>
+      </div>
+    </div>
   `;
 }
 
 async function loadCvProfile() {
   const resp = await fetch("/api/cv/profile");
   if (!resp.ok) {
+    activeCvChipName.textContent = "none";
     activeCvLabelEnrich.textContent = "no CV uploaded yet";
     activeCvLabelMatch.textContent = "no CV uploaded yet";
+    cvProfileDetailDiv.innerHTML = `<p class="text-sm text-slate-400">Upload a CV to build your profile.</p>`;
     return;
   }
   const profile = await resp.json();
-  cvStatus.textContent = `Active CV: ${profile.filename}`;
+  activeCvChipName.textContent = profile.filename;
   activeCvLabelEnrich.textContent = profile.filename;
   activeCvLabelMatch.textContent = profile.filename;
-  renderCvProfile(profile);
+  renderCvProfileDetail(profile);
 }
 
-async function loadCvProfiles() {
+async function loadCvList() {
   const resp = await fetch("/api/cv/profiles");
   const profiles = await resp.json();
-  cvSelect.innerHTML = "";
+  cvListDiv.innerHTML = "";
   for (const p of profiles) {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.filename + (p.is_active ? " (active)" : "");
-    opt.selected = !!p.is_active;
-    cvSelect.appendChild(opt);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `cv-card ${p.is_active ? "active" : ""}`;
+    btn.innerHTML = `
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-sm font-medium truncate">${escapeHtml(p.filename)}</span>
+        ${p.is_active ? '<span class="pill-indigo">Active</span>' : ""}
+      </div>
+      <div class="text-xs text-slate-400 mt-1">${escapeHtml(p.experience_level || "")} · ${formatDate(p.created_at)}</div>
+    `;
+    btn.addEventListener("click", async () => {
+      if (p.is_active) return;
+      await fetch(`/api/cv/profiles/${p.id}/activate`, { method: "POST" });
+      await loadCvList();
+      await loadCvProfile();
+      companiesPage = 1;
+      rankedPage = 1;
+      loadCompanies();
+      loadRankedCompanies();
+      loadStats();
+    });
+    cvListDiv.appendChild(btn);
   }
 }
 
@@ -278,9 +355,11 @@ async function pollMatchStatus() {
   } else if (!status.running) {
     matchProgress.textContent = "Nothing to score — enrich companies and upload a CV first.";
   }
+  setProgressBar(matchProgressTrack, matchProgressFill, status.done, status.total, status.running);
 
   loadRankedCompanies();
   loadCompanies();
+  loadStats();
 
   if (!status.running && matchPollHandle) {
     clearInterval(matchPollHandle);
@@ -296,14 +375,15 @@ async function loadRankedCompanies() {
   rankedTbody.innerHTML = "";
   for (const c of data.items) {
     const tr = document.createElement("tr");
+    tr.className = "hover:bg-slate-50 dark:hover:bg-slate-700/40";
     tr.innerHTML = `
-      <td><input type="checkbox" class="ranked-select" value="${c.id}" ${selectedCompanyIds.has(c.id) ? "checked" : ""} /></td>
-      <td>${escapeHtml(c.name)}</td>
-      <td><span class="fit-score ${fitScoreClass(c.fit_score)}">${c.fit_score}</span></td>
-      <td>${escapeHtml(c.sector || "")}</td>
-      <td>${escapeHtml(c.activity_summary || "")}</td>
-      <td>${escapeHtml(c.fit_rationale || "")}</td>
-      <td>${c.contact_count}</td>
+      <td class="td-cell"><input type="checkbox" class="ranked-select" value="${c.id}" ${selectedCompanyIds.has(c.id) ? "checked" : ""} /></td>
+      <td class="td-cell font-medium text-slate-900 dark:text-white">${escapeHtml(c.name)}</td>
+      <td class="td-cell"><span class="fit-score ${fitScoreClass(c.fit_score)}">${c.fit_score}</span></td>
+      <td class="td-cell">${escapeHtml(c.sector || "")}</td>
+      <td class="td-cell">${escapeHtml(c.activity_summary || "")}</td>
+      <td class="td-cell">${escapeHtml(c.fit_rationale || "")}</td>
+      <td class="td-cell">${c.contact_count}</td>
     `;
     const checkbox = tr.querySelector(".ranked-select");
     checkbox.addEventListener("change", () => {
@@ -354,8 +434,10 @@ async function pollDraftsStatus() {
     draftsProgress.textContent =
       `${status.done}/${status.total} drafted` + (status.running ? "" : " — done");
   }
+  setProgressBar(draftsProgressTrack, draftsProgressFill, status.done, status.total, status.running);
 
   loadDrafts();
+  loadStats();
 
   if (!status.running && draftsPollHandle) {
     clearInterval(draftsPollHandle);
@@ -367,6 +449,10 @@ async function loadDrafts() {
   const resp = await fetch("/api/drafts");
   const drafts = await resp.json();
   draftsListDiv.innerHTML = "";
+  if (!drafts.length) {
+    draftsListDiv.innerHTML = `<p class="text-sm text-slate-400">No drafts yet — select companies in the Matches tab and click "Generate Drafts for Selected".</p>`;
+    return;
+  }
   for (const d of drafts) {
     const card = document.createElement("div");
     card.className = "draft-card";
@@ -375,7 +461,7 @@ async function loadDrafts() {
       card.innerHTML = `
         <h3>${escapeHtml(contactName)} — ${escapeHtml(d.company_name)}</h3>
         <div class="meta">${escapeHtml(d.email || "")} · ${escapeHtml(d.title || "")}</div>
-        <p>${statusBadge("failed")} ${escapeHtml(d.error || "unknown error")}</p>
+        <p class="text-sm">${statusBadge("failed")} <span class="text-slate-500 dark:text-slate-400">${escapeHtml(d.error || "unknown error")}</span></p>
       `;
       draftsListDiv.appendChild(card);
       continue;
@@ -385,8 +471,10 @@ async function loadDrafts() {
       <div class="meta">${escapeHtml(d.email || "")} · ${escapeHtml(d.title || "")}</div>
       <input type="text" class="draft-subject" value="${escapeHtml(d.subject || "")}" />
       <textarea class="draft-body">${escapeHtml(d.body || "")}</textarea>
-      <button class="btn btn-primary save-draft-btn" data-id="${d.id}">Save</button>
-      <span class="save-status"></span>
+      <div class="flex items-center">
+        <button class="btn-primary btn-sm save-draft-btn" data-id="${d.id}">Save</button>
+        <span class="save-status"></span>
+      </div>
     `;
     const saveBtn = card.querySelector(".save-draft-btn");
     saveBtn.addEventListener("click", async () => {
@@ -413,6 +501,7 @@ async function loadDrafts() {
 initTabs();
 loadCompanies();
 loadCvProfile();
-loadCvProfiles();
+loadCvList();
 loadRankedCompanies();
 loadDrafts();
+loadStats();

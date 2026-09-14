@@ -5,72 +5,150 @@
   <title>Lead Matching &amp; Outreach</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="/static/vendor/tailwind.js"></script>
-  <link rel="stylesheet" href="/static/style.css" />
+  <style type="text/tailwindcss">
+    @layer components {
+      .card { @apply bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm p-6; }
+
+      .btn { @apply inline-flex items-center gap-1.5 text-sm font-semibold rounded-lg px-4 py-2.5 transition-colors disabled:opacity-50 disabled:pointer-events-none; }
+      .btn-primary { @apply btn bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/30; }
+      .btn-ghost { @apply btn bg-transparent border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400; }
+      .btn-sm { @apply px-3 py-1.5 text-xs; }
+
+      .field { @apply text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-slate-800 dark:text-slate-100; }
+
+      .pill { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium; }
+      .pill-indigo { @apply pill bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300; }
+      .pill-slate { @apply pill bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
+      .pill-green { @apply pill bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
+
+      .badge { @apply pill; }
+      .badge-pending, .badge-unscored { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
+      .badge-enriching, .badge-scoring { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
+      .badge-done, .badge-scored, .badge-drafted { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
+      .badge-failed { @apply badge bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300; }
+
+      .fit-score { @apply font-bold; }
+      .fit-score.high { @apply text-emerald-600 dark:text-emerald-400; }
+      .fit-score.mid { @apply text-amber-600 dark:text-amber-400; }
+      .fit-score.low { @apply text-slate-400; }
+
+      .tab-btn { @apply px-4 py-2 text-sm font-semibold rounded-full text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors whitespace-nowrap; }
+      .tab-btn.active { @apply bg-indigo-600 text-white shadow-sm hover:text-white; }
+
+      .stat-card { @apply card p-4 flex flex-col gap-1; }
+      .stat-value { @apply text-2xl font-bold text-slate-900 dark:text-white; }
+      .stat-label { @apply text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide; }
+
+      .progress-track { @apply w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden mt-2; }
+      .progress-fill { @apply h-full bg-indigo-600 transition-all duration-300 ease-out; }
+
+      .th-cell { @apply px-3 py-2.5 text-left text-[0.68rem] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/60 sticky top-0; }
+      .td-cell { @apply px-3 py-2.5 align-top text-slate-700 dark:text-slate-200 border-t border-slate-100 dark:border-slate-700/60 max-w-xs; }
+
+      .cv-card { @apply w-full text-left rounded-xl border border-slate-200 dark:border-slate-700 p-3 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors cursor-pointer; }
+      .cv-card.active { @apply border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10; }
+
+      .step-badge { @apply inline-flex items-center justify-center w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex-shrink-0; }
+
+      .pagination { @apply flex items-center gap-3 mt-3 text-sm text-slate-500 dark:text-slate-400; }
+      .pagination button { @apply text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 disabled:opacity-40 disabled:cursor-default; }
+      .pagination button:not(:disabled):hover { @apply border-indigo-500 text-indigo-600; }
+
+      .profile-field { @apply bg-slate-50 dark:bg-slate-900/60 rounded-xl p-4; }
+      .profile-field h4 { @apply text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2; }
+
+      .draft-card { @apply card p-4; }
+      .draft-card h3 { @apply text-sm font-semibold mb-0.5; }
+      .draft-card .meta { @apply text-xs text-slate-500 dark:text-slate-400 mb-3; }
+      .draft-card textarea { @apply field w-full mb-2; min-height: 140px; resize: vertical; }
+      .draft-card input[type="text"] { @apply field w-full mb-2; }
+      .save-status { @apply text-xs text-slate-500 dark:text-slate-400 ml-2; }
+    }
+  </style>
 </head>
 <body class="bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen">
-  <header class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 shadow-sm">
+  <header class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-20 shadow-sm">
     <div class="max-w-6xl mx-auto px-5 pt-4 pb-3 flex items-center justify-between gap-4 flex-wrap">
       <div class="flex items-center gap-3">
-        <span class="text-2xl text-indigo-600 dark:text-indigo-400">◎</span>
+        <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white text-xl shadow-sm shadow-indigo-600/30">◎</div>
         <div>
           <h1 class="text-base font-semibold leading-tight">Local Lead-Matching &amp; Outreach</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400">Runs fully on your machine — no cloud required</p>
         </div>
       </div>
-      <div class="flex items-center gap-2 text-sm">
-        <label for="cv-select" class="text-slate-500 dark:text-slate-400">Active CV</label>
-        <select id="cv-select" class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm"></select>
+      <div class="flex items-center gap-2 text-sm pill-indigo" id="active-cv-chip">
+        <span>Active CV: <strong id="active-cv-chip-name">—</strong></span>
       </div>
     </div>
-    <nav class="max-w-6xl mx-auto px-5 flex gap-1 overflow-x-auto" id="tab-nav">
+    <nav class="max-w-6xl mx-auto px-5 pb-3 flex gap-1 overflow-x-auto" id="tab-nav">
       <button class="tab-btn" data-tab="upload">1. Companies</button>
       <button class="tab-btn" data-tab="enrich">2. Enrich</button>
-      <button class="tab-btn" data-tab="cv">3. CV</button>
+      <button class="tab-btn" data-tab="profile">3. Profile</button>
       <button class="tab-btn" data-tab="match">4. Matches</button>
       <button class="tab-btn" data-tab="drafts">5. Drafts</button>
     </nav>
   </header>
 
-  <main class="max-w-6xl mx-auto px-5 py-6">
+  <main class="max-w-6xl mx-auto px-5 py-6 space-y-6">
 
-    <section id="tab-upload" class="tab-panel card">
-      <h2><span class="step">1</span> Upload Companies</h2>
-      <p class="hint">Upload your Apollo CSV export (needs at least <code>Company</code> and <code>Email</code> columns). Companies already in the system are matched by name and left untouched — this only adds new ones.</p>
-      <form id="upload-form" class="row">
-        <input type="file" id="csv-file" accept=".csv" required />
-        <button type="submit" class="btn btn-primary">Upload &amp; Ingest</button>
-      </form>
-      <p id="upload-result" class="hint"></p>
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="stat-card">
+        <span class="stat-label">Total Companies</span>
+        <span class="stat-value" id="stat-total">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Enriched</span>
+        <span class="stat-value" id="stat-enriched">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Scored (active CV)</span>
+        <span class="stat-value" id="stat-scored">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Drafts Ready</span>
+        <span class="stat-value" id="stat-drafts">—</span>
+      </div>
     </section>
 
-    <section id="tab-enrich" class="tab-panel card">
-      <h2><span class="step">2</span> Enrich Companies</h2>
-      <div class="row">
-        <button id="start-enrich-btn" class="btn btn-primary">Start Enrichment</button>
-        <select id="status-filter">
+    <section id="tab-upload" class="tab-panel card">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">1</span> Upload Companies</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">Upload your Apollo CSV export (needs at least <code class="px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-xs">Company</code> and <code class="px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-xs">Email</code> columns). Companies already in the system are matched by name and left untouched — this only adds new ones.</p>
+      <form id="upload-form" class="flex items-center gap-3 flex-wrap">
+        <input type="file" id="csv-file" accept=".csv" required class="field" />
+        <button type="submit" class="btn-primary">Upload &amp; Ingest</button>
+      </form>
+      <p id="upload-result" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></p>
+    </section>
+
+    <section id="tab-enrich" class="tab-panel card hidden">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">2</span> Enrich Companies</h2>
+      <div class="flex items-center gap-3 flex-wrap mt-3">
+        <button id="start-enrich-btn" class="btn-primary">Start Enrichment</button>
+        <select id="status-filter" class="field">
           <option value="">All statuses</option>
           <option value="pending">Pending</option>
           <option value="enriching">Enriching</option>
           <option value="done">Done</option>
           <option value="failed">Failed</option>
         </select>
-        <button id="refresh-companies-btn" class="btn btn-ghost">Refresh</button>
+        <button id="refresh-companies-btn" class="btn-ghost btn-sm">Refresh</button>
       </div>
-      <div id="enrich-progress" class="progress-line"></div>
-      <p class="hint">Fit scores in this table (if any) are shown for CV: <strong id="active-cv-label-enrich">—</strong></p>
-      <div class="table-scroll">
-        <table id="companies-table">
+      <div id="enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
+      <div class="progress-track" id="enrich-progress-track" hidden><div class="progress-fill" id="enrich-progress-fill" style="width:0%"></div></div>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mt-3">Fit scores in this table are shown for CV: <strong id="active-cv-label-enrich" class="text-slate-700 dark:text-slate-200">—</strong></p>
+      <div class="overflow-x-auto mt-3 border border-slate-200 dark:border-slate-700 rounded-xl">
+        <table class="w-full text-sm" id="companies-table">
           <thead>
             <tr>
-              <th>Company</th>
-              <th>Domain</th>
-              <th>Contacts</th>
-              <th>Status</th>
-              <th>Sector</th>
-              <th>Activity Summary</th>
-              <th>Size</th>
-              <th>Fit Score</th>
-              <th>Website</th>
+              <th class="th-cell">Company</th>
+              <th class="th-cell">Domain</th>
+              <th class="th-cell">Contacts</th>
+              <th class="th-cell">Status</th>
+              <th class="th-cell">Sector</th>
+              <th class="th-cell">Activity Summary</th>
+              <th class="th-cell">Size</th>
+              <th class="th-cell">Fit Score</th>
+              <th class="th-cell">Website</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -79,52 +157,62 @@
       <div class="pagination" id="companies-pagination"></div>
     </section>
 
-    <section id="tab-cv" class="tab-panel card">
-      <h2><span class="step">3</span> Upload Your CV</h2>
-      <p class="hint">Uploading the exact same CV again just re-activates its existing profile — it won't be re-analyzed. Different CVs are kept side by side; switch between them with the "Active CV" selector at the top.</p>
-      <form id="cv-form" class="row">
-        <input type="file" id="cv-file" accept=".pdf,.txt" required />
-        <button type="submit" class="btn btn-primary">Upload &amp; Analyze</button>
+    <section id="tab-profile" class="tab-panel card hidden">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">3</span> Your Profile</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">Uploading the exact same CV again just re-activates its existing profile — it won't be re-analyzed. Upload a different CV any time to keep it side by side and switch between them below.</p>
+
+      <form id="cv-form" class="flex items-center gap-3 flex-wrap mb-5">
+        <input type="file" id="cv-file" accept=".pdf,.txt" required class="field" />
+        <button type="submit" class="btn-primary">Upload &amp; Analyze</button>
       </form>
-      <p id="cv-status" class="hint"></p>
-      <div id="cv-profile" class="profile-grid"></div>
+      <p id="cv-status" class="text-sm text-slate-500 dark:text-slate-400 mb-5"></p>
+
+      <div class="grid md:grid-cols-[260px_1fr] gap-6">
+        <div>
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Your CVs</h3>
+          <div id="cv-list" class="space-y-2"></div>
+        </div>
+        <div id="cv-profile-detail"></div>
+      </div>
     </section>
 
-    <section id="tab-match" class="tab-panel card">
-      <h2><span class="step">4</span> Rank Companies by Fit</h2>
-      <div class="row">
-        <button id="start-match-btn" class="btn btn-primary">Start Matching</button>
+    <section id="tab-match" class="tab-panel card hidden">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">4</span> Rank Companies by Fit</h2>
+      <div class="flex items-center gap-3 flex-wrap mt-3">
+        <button id="start-match-btn" class="btn-primary">Start Matching</button>
       </div>
-      <div id="match-progress" class="progress-line"></div>
-      <p class="hint">Showing fit scores for CV: <strong id="active-cv-label-match">—</strong>. Matching a different CV never overwrites these — switch the active CV above to score/view against another one.</p>
-      <div class="table-scroll">
-        <table id="ranked-table">
+      <div id="match-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
+      <div class="progress-track" id="match-progress-track" hidden><div class="progress-fill" id="match-progress-fill" style="width:0%"></div></div>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mt-3">Showing fit scores for CV: <strong id="active-cv-label-match" class="text-slate-700 dark:text-slate-200">—</strong>. Switching the active CV shows that CV's own independent scores.</p>
+      <div class="overflow-x-auto mt-3 border border-slate-200 dark:border-slate-700 rounded-xl">
+        <table class="w-full text-sm" id="ranked-table">
           <thead>
             <tr>
-              <th></th>
-              <th>Company</th>
-              <th>Fit Score</th>
-              <th>Sector</th>
-              <th>Activity Summary</th>
-              <th>Why This Fits</th>
-              <th>Contacts</th>
+              <th class="th-cell"></th>
+              <th class="th-cell">Company</th>
+              <th class="th-cell">Fit Score</th>
+              <th class="th-cell">Sector</th>
+              <th class="th-cell">Activity Summary</th>
+              <th class="th-cell">Why This Fits</th>
+              <th class="th-cell">Contacts</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
       <div class="pagination" id="ranked-pagination"></div>
-      <button id="generate-drafts-btn" class="btn btn-primary mt-3">Generate Drafts for Selected</button>
+      <button id="generate-drafts-btn" class="btn-primary mt-4">Generate Drafts for Selected</button>
     </section>
 
-    <section id="tab-drafts" class="tab-panel card">
-      <h2><span class="step">5</span> Outreach Drafts</h2>
-      <div id="drafts-progress" class="progress-line"></div>
-      <div class="row">
-        <a class="btn btn-ghost" id="export-csv-link" href="/api/drafts/export.csv">Export all as CSV</a>
-        <a class="btn btn-ghost" id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
+    <section id="tab-drafts" class="tab-panel card hidden">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">5</span> Outreach Drafts</h2>
+      <div id="drafts-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-2"></div>
+      <div class="progress-track" id="drafts-progress-track" hidden><div class="progress-fill" id="drafts-progress-fill" style="width:0%"></div></div>
+      <div class="flex items-center gap-3 flex-wrap mt-3">
+        <a class="btn-ghost btn-sm" id="export-csv-link" href="/api/drafts/export.csv">Export all as CSV</a>
+        <a class="btn-ghost btn-sm" id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
       </div>
-      <div id="drafts-list"></div>
+      <div id="drafts-list" class="space-y-3 mt-4"></div>
     </section>
 
   </main>
