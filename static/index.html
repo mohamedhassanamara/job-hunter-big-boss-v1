@@ -22,10 +22,13 @@
       .pill-green { @apply pill bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
 
       .badge { @apply pill; }
-      .badge-pending, .badge-unscored { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
-      .badge-enriching, .badge-scoring { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
-      .badge-done, .badge-scored, .badge-drafted { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
+      .badge-pending, .badge-unscored, .badge-not_started { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
+      .badge-enriching, .badge-scoring, .badge-running { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
+      .badge-done, .badge-scored, .badge-drafted, .badge-sent, .badge-completed { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
       .badge-failed { @apply badge bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300; }
+      .badge-draft { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
+      .badge-sending { @apply badge bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300; }
+      .badge-paused { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
 
       .fit-score { @apply font-bold; }
       .fit-score.high { @apply text-emerald-600 dark:text-emerald-400; }
@@ -48,6 +51,9 @@
       .cv-card { @apply w-full text-left rounded-xl border border-slate-200 dark:border-slate-700 p-3 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors cursor-pointer; }
       .cv-card.active { @apply border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10; }
 
+      .cv-row { @apply w-full text-left rounded-lg px-2.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors cursor-pointer flex items-center justify-between gap-2; }
+      .cv-row.active { @apply bg-indigo-50 dark:bg-indigo-500/10; }
+
       .step-badge { @apply inline-flex items-center justify-center w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-bold flex-shrink-0; }
 
       .pagination { @apply flex items-center gap-3 mt-3 text-sm text-slate-500 dark:text-slate-400; }
@@ -57,12 +63,18 @@
       .profile-field { @apply bg-slate-50 dark:bg-slate-900/60 rounded-xl p-4; }
       .profile-field h4 { @apply text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2; }
 
+      .signals-details summary { @apply cursor-pointer text-xs font-semibold text-indigo-600 dark:text-indigo-400; }
+      .signal-item { @apply text-xs mt-1.5 pl-2 border-l-2 border-slate-200 dark:border-slate-700; }
+
       .draft-card { @apply card p-4; }
       .draft-card h3 { @apply text-sm font-semibold mb-0.5; }
       .draft-card .meta { @apply text-xs text-slate-500 dark:text-slate-400 mb-3; }
       .draft-card textarea { @apply field w-full mb-2; min-height: 140px; resize: vertical; }
       .draft-card input[type="text"] { @apply field w-full mb-2; }
       .save-status { @apply text-xs text-slate-500 dark:text-slate-400 ml-2; }
+
+      .queue-card { @apply w-full text-left rounded-xl border border-slate-200 dark:border-slate-700 p-3 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors cursor-pointer; }
+      .queue-card.selected { @apply border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10; }
     }
   </style>
 </head>
@@ -76,8 +88,27 @@
           <p class="text-xs text-slate-500 dark:text-slate-400">Runs fully on your machine — no cloud required</p>
         </div>
       </div>
-      <div class="flex items-center gap-2 text-sm pill-indigo" id="active-cv-chip">
-        <span>Active CV: <strong id="active-cv-chip-name">—</strong></span>
+      <div class="relative">
+        <button type="button" id="cv-switcher-btn" class="flex items-center gap-2 pill-indigo hover:bg-indigo-100 dark:hover:bg-indigo-500/20 transition-colors">
+          <span class="flex flex-col items-start leading-tight text-left">
+            <span class="text-[0.62rem] uppercase tracking-wide opacity-70">Active CV</span>
+            <span id="active-cv-chip-name" class="font-semibold max-w-[12rem] truncate">—</span>
+          </span>
+          <span class="text-[0.6rem] opacity-70">▾</span>
+        </button>
+
+        <div id="cv-switcher-panel" class="hidden absolute right-0 mt-2 w-80 card p-3 z-30 shadow-lg">
+          <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Switch CV</h4>
+          <div id="cv-switcher-list" class="space-y-1 max-h-56 overflow-y-auto"></div>
+          <div class="border-t border-slate-200 dark:border-slate-700 mt-3 pt-3">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Upload new CV</p>
+            <form id="cv-switcher-upload-form" class="flex items-center gap-2">
+              <input type="file" id="cv-switcher-file" accept=".pdf,.txt" required class="field flex-1 text-xs min-w-0" />
+              <button type="submit" class="btn-primary btn-sm flex-shrink-0">Upload</button>
+            </form>
+            <p id="cv-switcher-upload-status" class="text-xs text-slate-500 dark:text-slate-400 mt-1.5"></p>
+          </div>
+        </div>
       </div>
     </div>
     <nav class="max-w-6xl mx-auto px-5 pb-3 flex gap-1 overflow-x-auto" id="tab-nav">
@@ -86,6 +117,7 @@
       <button class="tab-btn" data-tab="profile">3. Profile</button>
       <button class="tab-btn" data-tab="match">4. Matches</button>
       <button class="tab-btn" data-tab="drafts">5. Drafts</button>
+      <button class="tab-btn" data-tab="queues">6. Queues</button>
     </nav>
   </header>
 
@@ -135,6 +167,14 @@
       </div>
       <div id="enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
       <div class="progress-track" id="enrich-progress-track" hidden><div class="progress-fill" id="enrich-progress-fill" style="width:0%"></div></div>
+
+      <div class="flex items-center gap-3 flex-wrap mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+        <button id="start-deep-enrich-btn" class="btn-ghost">Deep Enrich (Signals)</button>
+        <span class="text-xs text-slate-400">Slower optional pass: careers/blog pages + recent news, for a specific hook in each draft.</span>
+      </div>
+      <div id="deep-enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
+      <div class="progress-track" id="deep-enrich-progress-track" hidden><div class="progress-fill" id="deep-enrich-progress-fill" style="width:0%"></div></div>
+
       <p class="text-sm text-slate-500 dark:text-slate-400 mt-3">Fit scores in this table are shown for CV: <strong id="active-cv-label-enrich" class="text-slate-700 dark:text-slate-200">—</strong></p>
       <div class="overflow-x-auto mt-3 border border-slate-200 dark:border-slate-700 rounded-xl">
         <table class="w-full text-sm" id="companies-table">
@@ -148,6 +188,7 @@
               <th class="th-cell">Activity Summary</th>
               <th class="th-cell">Size</th>
               <th class="th-cell">Fit Score</th>
+              <th class="th-cell">Signals</th>
               <th class="th-cell">Website</th>
             </tr>
           </thead>
@@ -201,7 +242,11 @@
         </table>
       </div>
       <div class="pagination" id="ranked-pagination"></div>
-      <button id="generate-drafts-btn" class="btn-primary mt-4">Generate Drafts for Selected</button>
+      <div class="flex items-center gap-3 flex-wrap mt-4">
+        <button id="generate-drafts-btn" class="btn-primary">Generate Drafts for Selected</button>
+        <button id="add-to-queue-btn" class="btn-ghost" disabled>Add to Queue</button>
+        <span id="selection-count-label" class="text-sm text-slate-500 dark:text-slate-400"></span>
+      </div>
     </section>
 
     <section id="tab-drafts" class="tab-panel card hidden">
@@ -213,6 +258,29 @@
         <a class="btn-ghost btn-sm" id="export-zip-link" href="/api/drafts/export.zip">Export all as .txt (zip)</a>
       </div>
       <div id="drafts-list" class="space-y-3 mt-4"></div>
+    </section>
+
+    <section id="tab-queues" class="tab-panel card hidden">
+      <h2 class="flex items-center gap-2 text-base font-semibold mb-1"><span class="step-badge">6</span> Email Queues</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-3">
+        Sends go out one at a time, <strong id="queue-interval-label">15 min</strong> apart, from a background
+        process that keeps running even if you close this tab — restarting the app resumes safely without
+        re-sending anything already sent. Cap: <strong id="queue-cap-label">20</strong> items per queue,
+        <strong id="queue-daily-cap-label">500</strong>/day safety net
+        (<span id="queue-sent-today-label">0</span> sent today).
+      </p>
+      <div id="mailer-warning" class="hidden text-sm bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 rounded-lg p-3 mb-4">
+        Email sending isn't configured yet — set <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">GMAIL_ADDRESS</code>
+        and <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">GMAIL_APP_PASSWORD</code> in <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">.env</code>
+        (see <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">.env.example</code>) and restart the app.
+        Queues can still be created and edited, but sends will fail until then. Test your credentials in isolation
+        first with <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">python test_send.py</code>.
+      </div>
+
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">All Queues</h3>
+      <div id="queues-list" class="space-y-2 mb-6"></div>
+
+      <div id="queue-detail"></div>
     </section>
 
   </main>

@@ -57,6 +57,60 @@ def ddg_search_homepage(company_name: str) -> str | None:
     return None
 
 
+def ddg_search_results(query: str, max_results: int = 5) -> list[dict]:
+    """General-purpose DuckDuckGo HTML search returning title/url/snippet for
+    up to max_results results, filtering out known directory/social sites."""
+    try:
+        resp = requests.get(
+            "https://duckduckgo.com/html/",
+            params={"q": query},
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+    for result in soup.select(".result"):
+        link = result.select_one("a.result__a")
+        if not link or not link.get("href"):
+            continue
+        href = link["href"]
+        parsed = urlparse(href)
+        if parsed.netloc == "" or "duckduckgo.com" in parsed.netloc:
+            qs = parse_qs(parsed.query)
+            real = qs.get("uddg", [None])[0]
+            if real:
+                href = unquote(real)
+        if not href.startswith("http") or _is_blocked(href):
+            continue
+        snippet_el = result.select_one(".result__snippet")
+        results.append(
+            {
+                "title": link.get_text(strip=True),
+                "url": href,
+                "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+            }
+        )
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def fetch_soup(url: str) -> BeautifulSoup | None:
+    """Fetches a page and returns its parsed soup (for link discovery), or
+    None on any failure — kept separate from fetch_page_text since callers
+    here need the raw DOM, not just extracted text."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    return BeautifulSoup(resp.text, "html.parser")
+
+
 def _clean_text(soup: BeautifulSoup) -> str:
     for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav", "form"]):
         tag.decompose()
@@ -64,16 +118,30 @@ def _clean_text(soup: BeautifulSoup) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _find_about_link(soup: BeautifulSoup, base_url: str) -> str | None:
+def find_link_by_keywords(soup: BeautifulSoup, base_url: str, keywords: list[str]) -> str | None:
     base_domain = urlparse(base_url).netloc.lower()
     for a in soup.find_all("a", href=True):
         label = (a.get_text() or "").strip().lower()
         href = a["href"]
-        if "about" in label or "about" in href.lower():
+        if any(kw in label or kw in href.lower() for kw in keywords):
             full = requests.compat.urljoin(base_url, href)
             if urlparse(full).netloc.lower() == base_domain:
                 return full
     return None
+
+
+def _find_about_link(soup: BeautifulSoup, base_url: str) -> str | None:
+    return find_link_by_keywords(soup, base_url, ["about"])
+
+
+def fetch_page_text_only(url: str, max_chars: int = MAX_TEXT_CHARS) -> str | None:
+    """Fetches a single page's cleaned text with no About-page chasing —
+    used for targeted blog/careers page fetches where we already know the URL."""
+    soup = fetch_soup(url)
+    if not soup:
+        return None
+    text = _clean_text(soup).strip()
+    return text[:max_chars] if text else None
 
 
 def fetch_page_text(url: str) -> str | None:

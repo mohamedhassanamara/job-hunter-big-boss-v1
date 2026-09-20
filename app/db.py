@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS companies (
     raw_scrape_text TEXT,
     enrichment_status TEXT NOT NULL DEFAULT 'pending',
     enrichment_error TEXT,
+    signals TEXT,
+    deep_enrichment_status TEXT NOT NULL DEFAULT 'not_started',
+    deep_enrichment_error TEXT,
     updated_at TEXT
 );
 
@@ -70,6 +73,36 @@ CREATE TABLE IF NOT EXISTS email_drafts (
     error TEXT,
     created_at TEXT,
     updated_at TEXT
+);
+
+-- A queue is a fixed batch of at most QUEUE_ITEM_CAP outreach emails sent
+-- one at a time, QUEUE_SEND_INTERVAL_SECONDS apart, by the background
+-- sender loop (app/queues.py). Status: draft -> sending -> completed, with
+-- paused as a side-state of sending.
+CREATE TABLE IF NOT EXISTS queues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    cv_profile_id INTEGER REFERENCES cv_profiles(id),
+    next_send_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS queue_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_id INTEGER NOT NULL REFERENCES queues(id),
+    contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    position INTEGER NOT NULL,
+    subject TEXT,
+    body TEXT,
+    generation_status TEXT NOT NULL DEFAULT 'pending',
+    send_status TEXT NOT NULL DEFAULT 'pending',
+    sent_at TEXT,
+    error_message TEXT,
+    updated_at TEXT,
+    UNIQUE(queue_id, contact_id)
 );
 """
 
@@ -175,7 +208,19 @@ def _migrate_legacy_single_cv(conn):
                 pass  # sqlite < 3.35: leave the now-unused column in place
 
 
+def _migrate_add_signals_columns(conn):
+    existing = _columns(conn, "companies")
+    for col, ddl in (
+        ("signals", "TEXT"),
+        ("deep_enrichment_status", "TEXT NOT NULL DEFAULT 'not_started'"),
+        ("deep_enrichment_error", "TEXT"),
+    ):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {ddl}")
+
+
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate_legacy_single_cv(conn)
+        _migrate_add_signals_columns(conn)

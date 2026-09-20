@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import re
 import zipfile
 
@@ -27,6 +28,22 @@ from app.ingest import ingest_csv
 from app.llm import OllamaError
 from app.matching import get_status as get_match_status
 from app.matching import start_matching
+from app.queues import (
+    create_queue,
+    ensure_sender_loop_started,
+    get_generation_status,
+    get_queue,
+    get_send_config,
+    list_queues,
+    pause_queue,
+    rename_queue,
+    resume_queue,
+    retry_item,
+    start_queue,
+)
+from app.queues import update_item as update_queue_item
+from app.signals import get_status as get_deep_enrich_status
+from app.signals import start_deep_enrichment
 
 app = FastAPI(title="Local Lead-Matching & Outreach Tool")
 
@@ -34,6 +51,7 @@ app = FastAPI(title="Local Lead-Matching & Outreach Tool")
 @app.on_event("startup")
 def on_startup():
     init_db()
+    ensure_sender_loop_started()
 
 
 @app.get("/")
@@ -78,6 +96,7 @@ def list_companies(page: int = 1, page_size: int = 50, status: str | None = None
         rows = conn.execute(
             f"SELECT c.id, c.name, c.domain, c.website_url, c.sector, "
             f"c.activity_summary, c.size_signal, c.enrichment_status, c.enrichment_error, "
+            f"c.signals, c.deep_enrichment_status, c.deep_enrichment_error, "
             f"fs.fit_status, fs.fit_score, fs.fit_rationale, "
             f"(SELECT COUNT(*) FROM contacts WHERE contacts.company_id = c.id) AS contact_count "
             f"FROM companies c "
@@ -87,8 +106,14 @@ def list_companies(page: int = 1, page_size: int = 50, status: str | None = None
             [*params, page_size, offset],
         ).fetchall()
 
+    items = []
+    for r in rows:
+        item = dict(r)
+        item["signals"] = json.loads(item["signals"]) if item["signals"] else []
+        items.append(item)
+
     return {
-        "items": [dict(r) for r in rows],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -148,6 +173,19 @@ def enrich_start():
 @app.get("/api/enrich/status")
 def enrich_status():
     return get_enrich_status()
+
+
+@app.post("/api/enrich/deep/start")
+def deep_enrich_start():
+    started = start_deep_enrichment()
+    if not started:
+        raise HTTPException(status_code=409, detail="Deep enrichment is already running.")
+    return {"started": True}
+
+
+@app.get("/api/enrich/deep/status")
+def deep_enrich_status():
+    return get_deep_enrich_status()
 
 
 @app.post("/api/cv/upload")
@@ -295,6 +333,87 @@ def drafts_export_zip(ids: str | None = None):
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=outreach_drafts.zip"},
     )
+
+
+@app.get("/api/queues/config")
+def queues_config():
+    return get_send_config()
+
+
+@app.post("/api/queues")
+def queues_create(payload: dict = Body(...)):
+    company_ids = payload.get("company_ids", [])
+    try:
+        queue = create_queue(company_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return queue
+
+
+@app.get("/api/queues")
+def queues_list():
+    return list_queues()
+
+
+@app.get("/api/queues/{queue_id}")
+def queues_get(queue_id: int):
+    queue = get_queue(queue_id)
+    if not queue:
+        raise HTTPException(status_code=404, detail="Queue not found.")
+    return queue
+
+
+@app.put("/api/queues/{queue_id}")
+def queues_rename(queue_id: int, payload: dict = Body(...)):
+    ok = rename_queue(queue_id, payload.get("name", ""))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Queue not found.")
+    return get_queue(queue_id)
+
+
+@app.get("/api/queues/{queue_id}/generation-status")
+def queues_generation_status(queue_id: int):
+    return get_generation_status(queue_id)
+
+
+@app.post("/api/queues/{queue_id}/start")
+def queues_start(queue_id: int):
+    ok, error = start_queue(queue_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
+
+
+@app.post("/api/queues/{queue_id}/pause")
+def queues_pause(queue_id: int):
+    ok, error = pause_queue(queue_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
+
+
+@app.post("/api/queues/{queue_id}/resume")
+def queues_resume(queue_id: int):
+    ok, error = resume_queue(queue_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
+
+
+@app.put("/api/queues/{queue_id}/items/{item_id}")
+def queues_update_item(queue_id: int, item_id: int, payload: dict = Body(...)):
+    ok, error = update_queue_item(queue_id, item_id, payload.get("subject", ""), payload.get("body", ""))
+    if not ok:
+        raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
+
+
+@app.post("/api/queues/{queue_id}/items/{item_id}/retry")
+def queues_retry_item(queue_id: int, item_id: int):
+    ok, error = retry_item(queue_id, item_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")

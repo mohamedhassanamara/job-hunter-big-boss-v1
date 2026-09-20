@@ -55,8 +55,15 @@ def _set_state(**kwargs):
         _state.update(kwargs)
 
 
-def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: dict) -> None:
-    now = datetime.now(timezone.utc).isoformat()
+def generate_draft_content(profile: dict, contact: dict, company: dict) -> tuple[str, str]:
+    """Builds the prompt, calls the local LLM, and returns (subject, body).
+
+    Pure content generation — no DB access — so both the Drafts tab
+    (email_drafts table) and the Queues feature (queue_items table) can
+    share the exact same generation logic.
+
+    Raises OllamaError, ValueError, or KeyError on failure.
+    """
     contact_name = f"{contact['first_name']} {contact['last_name']}".strip() or "there"
 
     fit_rationale_line = ""
@@ -75,11 +82,40 @@ def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: 
         fit_rationale_line=fit_rationale_line,
     )
 
+    raw = generate(prompt)
+    parsed = parse_json_response(raw)
+    return parsed["subject"], parsed["body"]
+
+
+def fetch_companies_and_contacts(company_ids: list[int], cv_profile_id: int) -> tuple[dict, list[dict]]:
+    """Shared lookup: companies (with their fit rationale for the given CV) and
+    their contacts, for a set of company ids. Used by both drafting and queue creation."""
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(company_ids))
+        companies = {
+            row["id"]: dict(row)
+            for row in conn.execute(
+                f"SELECT co.id, co.name, co.activity_summary, fs.fit_rationale FROM companies co "
+                f"LEFT JOIN fit_scores fs ON fs.company_id = co.id AND fs.cv_profile_id = ? "
+                f"WHERE co.id IN ({placeholders})",
+                [cv_profile_id, *company_ids],
+            ).fetchall()
+        }
+        contacts = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT id, company_id, first_name, last_name, title, email FROM contacts "
+                f"WHERE company_id IN ({placeholders})",
+                company_ids,
+            ).fetchall()
+        ]
+    return companies, contacts
+
+
+def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: dict) -> None:
+    now = datetime.now(timezone.utc).isoformat()
     try:
-        raw = generate(prompt)
-        parsed = parse_json_response(raw)
-        subject = parsed["subject"]
-        body = parsed["body"]
+        subject, body = generate_draft_content(profile, contact, company)
     except (OllamaError, ValueError, KeyError) as e:
         conn.execute(
             "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, status, error, "
@@ -102,25 +138,7 @@ def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: 
 
 
 def _run_drafting(company_ids: list[int], cv_profile_id: int, profile: dict):
-    with get_conn() as conn:
-        placeholders = ",".join("?" * len(company_ids))
-        companies = {
-            row["id"]: dict(row)
-            for row in conn.execute(
-                f"SELECT co.id, co.name, co.activity_summary, fs.fit_rationale FROM companies co "
-                f"LEFT JOIN fit_scores fs ON fs.company_id = co.id AND fs.cv_profile_id = ? "
-                f"WHERE co.id IN ({placeholders})",
-                [cv_profile_id, *company_ids],
-            ).fetchall()
-        }
-        contacts = [
-            dict(row)
-            for row in conn.execute(
-                f"SELECT id, company_id, first_name, last_name, title FROM contacts "
-                f"WHERE company_id IN ({placeholders})",
-                company_ids,
-            ).fetchall()
-        ]
+    companies, contacts = fetch_companies_and_contacts(company_ids, cv_profile_id)
 
     _set_state(
         total=len(contacts),

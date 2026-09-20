@@ -62,6 +62,63 @@ every time you want to prep a new outreach batch (new CSV export / updated CV).
   and email quality/personalization matters more here than call-count
   efficiency — a batched prompt asking for several full email bodies at once
   is also more prone to models bleeding details between recipients.
+- **Email Queues with scheduled sending**: done. From the Matches tab, select
+  up to 20 companies and click "Add to Queue" — this creates a queue, drafts
+  one email per contact in the background (reusing the exact same generation
+  logic as Phase 5's Drafts tab — see `generate_draft_content()` in
+  `app/drafts.py`), and shows it in the new Queues tab. From there: edit any
+  not-yet-sent draft, click "Start Sending" to send one email every 15
+  minutes via Gmail SMTP, and Pause/Resume at any time. A single background
+  thread (started once at app startup, `app/queues.py`'s `ensure_sender_loop_started()`)
+  polls the database every 20s for due queues — all state (what's sent,
+  what's next, when) lives in SQLite, so restarting the app resumes correctly
+  and **never re-sends an already-`sent` item**: the sender only ever looks
+  at items still `send_status = 'pending'`. A send failure marks that one
+  item `failed` with the error message and moves on to the next item rather
+  than halting the queue — failed items get a "Retry" button. See
+  `test_send.py` for a completely standalone SMTP credential check, and the
+  "Sending Setup" section below for configuration.
+
+## Sending Setup
+
+Email sending uses Gmail via SMTP with an App Password — the simplest local
+option, no OAuth/Cloud Console setup required:
+
+1. Enable 2-Step Verification on your Google account, then generate an App
+   Password at <https://myaccount.google.com/apppasswords>.
+2. Copy `.env.example` to `.env` (if you haven't already) and fill in:
+   `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD` (the app password, not your normal
+   one), and optionally `SENDER_NAME` / `REPLY_TO_ADDRESS`.
+3. **Test in isolation before trusting the app**: `python test_send.py --to you@yourself.com --subject "test" --body "hello"`.
+   This script has zero dependency on the database or queue logic — it just
+   proves SMTP works, printing a clear success/failure and error detail
+   without ever logging your credentials. Run it with no arguments to be
+   prompted interactively instead.
+4. Once `test_send.py` succeeds, queues in the app will send for real. Until
+   `GMAIL_ADDRESS`/`GMAIL_APP_PASSWORD` are set, the Queues tab shows a
+   warning banner, and any send attempt fails gracefully per-item (visible
+   with a "Retry" button) rather than blocking queue creation or crashing.
+
+**Swapping SMTP providers** (Outlook, Mailgun, SendGrid, etc.) is a config
+change, not a code change — set `SMTP_HOST`/`SMTP_PORT` plus the equivalent
+credentials in `.env`; `app/mailer.py` is generic SMTP+STARTTLS underneath.
+If an App Password is ever blocked by an org policy, the Gmail API with
+OAuth is the fallback (more setup: a Google Cloud project, consent screen,
+token refresh) — not implemented here since App Password covers the default
+case.
+
+**Daily send cap**: `DAILY_SEND_CAP` (default 500) is a safety net, not a
+guarantee of Gmail's actual policy, which can change — once today's sent
+count (across all queues) reaches it, sends pause until the next UTC day;
+nothing is lost, items just stay `pending` until then.
+
+**Credential safety**: `test_send.py` and the queue sender never print your
+App Password — `smtplib`'s raw debug logging (which would include it,
+base64-encoded, in the `AUTH PLAIN` command) is deliberately left off.
+Failures still print a clear error via the exception handlers. If you ever
+turn on `server.set_debuglevel(1)` yourself for deeper debugging, remember
+to scrub that credential line before sharing the output with anyone
+(including pasting it into an AI assistant).
 
 ## Setup
 
@@ -109,6 +166,13 @@ the UI — click a tab to work through that step.
    each selected company appears in the Outreach Drafts section — edit the
    subject/body inline and hit Save, then use "Export all as CSV" or
    "Export all as .txt (zip)" to get files you can send manually.
+7. Alternatively, from the same ranked table, check up to 20 companies and
+   click "Add to Queue" (disabled above 20 selected) to have the app send the
+   emails for you on a schedule instead of exporting manually — see "Sending
+   Setup" below to configure Gmail SMTP first. Switch to the Queues tab, hit
+   "Start Sending", and the app sends one email every 15 minutes in the
+   background — Pause/Resume any time, and failed sends get a "Retry" button
+   without affecting the rest of the queue.
 
 Re-uploading a CSV or re-running enrichment is safe: companies are matched by
 name, so re-uploading a CSV that includes already-enriched companies leaves
@@ -190,6 +254,14 @@ Set in `.env` (see `.env.example`):
   `401 Unauthorized` otherwise, breaking the "runs entirely locally" goal of
   this app anyway.
 - `DB_PATH` — default `./data/app.db`
+- `QUEUE_ITEM_CAP` — default `20`. Hard cap on contacts per queue.
+- `QUEUE_SEND_INTERVAL_SECONDS` — default `900` (15 min). Time between sends within a queue.
+- `SENDER_LOOP_POLL_SECONDS` — default `20`. How often the background sender thread checks for due queues.
+- `SMTP_HOST` / `SMTP_PORT` — default `smtp.gmail.com` / `587`.
+- `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` — required for sending; see "Sending Setup" below.
+- `SENDER_NAME` — display name on outgoing emails (defaults to `GMAIL_ADDRESS`).
+- `REPLY_TO_ADDRESS` — optional, only if replies should go somewhere other than `GMAIL_ADDRESS`.
+- `DAILY_SEND_CAP` — default `500`. A safety net, not an enforced Gmail policy fact.
 
 ## Notes on the search/scraping approach
 
