@@ -8,207 +8,121 @@ from app.cv import get_active_profile
 from app.db import get_conn
 from app.llm import OllamaError, generate, parse_json_response
 
-GOOD_SUBJECT_EXAMPLES = [
-    "Your LeNIA-Chat-1.5B release",
-    "Question about your edge deployment plans",
-    "Scaling PILoT's mobile layer",
-    "Saw your Series B announcement",
-    "Question about the ML infra team's next hire",
-]
+# ═══════════════════════════════════════════════════════════════════════
+# Two-step generation pipeline:
+#   Step 1 (ANGLE_MATCHER_PROMPT) — pure reasoning, JSON out. Finds ONE real
+#     technical angle: Tier 1 (a recent signal) if there is one, else Tier 2
+#     (the company's core product/domain, still a real technical detail, not
+#     a launch). Only aborts if there is truly zero data to work from.
+#   Step 2 (HUMAN_DRAFTER_PROMPT) — direct candidate-intent outreach, plain
+#     text out, using only Step 1's JSON as input. Introduces the candidate
+#     by name/role, grounds one paragraph in the real signal/product, and
+#     asks a direct, humble question about engineering opportunities — never
+#     a rhetorical tech-stack interrogation.
+#   Step 3 — deterministic Python post-processing: a fully deterministic
+#     subject line (never LLM-generated), dash/quote stripping, hardcoded
+#     "Best regards," sign-off, a completeness sanity check, and lint_draft
+#     as the final automated guardrail. No prose step is trusted un-checked.
+# ═══════════════════════════════════════════════════════════════════════
 
-BAD_SUBJECT_EXAMPLES = [
-    "Bridging AI and Mobile for PILoT",
-    "Re: LeNIA-Chat-1.5B and your production pipeline",
-    "Where AI Meets Real-World Impact",
-    "Exploring Synergies",
-    "Following Up on Your Growth",
-]
+ANGLE_MATCHER_PROMPT = """You are a technical analyst identifying a conversation bridge between a \
+company and an engineer's background.
 
-# Canonical 5-part cold outreach structure — the fixed quality bar for every
-# draft. Length/rhythm still varies naturally per company (how much the
-# signal actually supports), but the shape itself (greeting, hook,
-# self-intro, connection, ask, sign-off) does not.
-PROMPT_TEMPLATE = """You are drafting a short, personalized cold outreach email from a job-seeking \
-candidate to a contact at a company, for the candidate to review and send themselves.
+INPUTS:
+Company Domain / Summary: {company_summary}
+Recent Signals / News: {signals}
+Candidate Skills / Projects: {candidate_profile}
 
-Candidate background:
-- Experience level: {experience_level}
-- Skills: {skills}
-- Target roles: {target_roles}
-- Why this candidate's background fits companies like this one: {target_sector_profile}
+TASK:
+Identify ONE specific technical angle to reach out on:
+- Tier 1 (Preferred): A recent release, post, or technical milestone from the signals.
+- Tier 2 (Fallback if no recent news): A specific engineering challenge inherent to their core
+  product/sector (e.g. IoT edge telemetry, streaming APIs, low-latency client architecture). Still a
+  real, specific technical detail about THIS company's actual domain — never a vague category like
+  "bringing AI-driven wellbeing tools" or "supporting digital transformation".
 
-Recipient:
-- Name: {contact_name}
-- Title: {contact_title}
-- Company: {company_name}
+Only respond with {{"insufficient_signal": true}} if the company summary AND the signals are BOTH
+completely empty or contain zero technical detail to work from — do not use it just because there's no
+recent launch. A Tier 2 angle from the core domain is always preferable to aborting.
 
-What the company does: {activity_summary}
-{fit_rationale_line}
-{signals_line}
+Output ONLY valid JSON, no markdown wrapping, either the schema below or the insufficient_signal object:
+{{
+  "signal_or_product_name": "<the specific product/feature/release name or core technical domain to reference, a few words>",
+  "candidate_matching_experience": "<1 sentence on the specific past project, pipeline, or stack the candidate built that directly mirrors this>"
+}}
+"""
 
-═══════════════════════════════════════
-EMAIL STRUCTURE (5 parts, in this exact order, every time)
-═══════════════════════════════════════
+HUMAN_DRAFTER_PROMPT = """You are writing a concise, professional cold outreach email from Mohamed \
+Hassen Amara (a software engineer) to a founder, CTO, or engineering lead ({first_name}) at \
+{company_name}.
 
-1. GREETING
-   "Hi {contact_first_name}," — the contact's real first name, never "there", "Hi team,", or any
-   generic greeting.
+INPUTS:
+- Recipient Name: {first_name}
+- Company Name: {company_name}
+- Relevant Product / Feature: {signal_or_product_name}
+- Candidate Relevance: {candidate_matching_experience}
 
-2. THE HOOK (1-2 sentences)
-   Open with the single most specific, real signal available for this company (from the signals
-   listed above, if any — a real launch, blog post, hiring signal, news item). This must be
-   something only findable by actually looking at this specific company, never a paraphrase of
-   their generic activity summary ("you focus on AI development" is NOT a hook).
-   Never frame it as a reply ("Re:", "Following up on", "responding to") — this is cold outreach,
-   state that plainly through tone, not through a fake-reply premise.
-   If no signal is listed above, open instead with one specific, real detail from the activity
-   summary — still concrete, never "I've been following your work" or "I've been admiring [Company]'s [thing]".
+OBJECTIVE:
+Introduce yourself, show that you understand what they build, highlight your directly relevant
+engineering background, and ask if they are open to an introductory conversation or exploring
+engineering additions to their team.
 
-3. BRIEF SELF-INTRODUCTION (1 sentence)
-   One sentence stating who the candidate is in terms relevant to THIS company, not a skills dump
-   — e.g. "I'm a software engineer who moves AI prototypes into production systems." Phrase this
-   differently each time depending on what's actually relevant to this company. This should read
-   as a natural continuation of the hook, not a separate resume paragraph.
+RULES:
+1. GREETING: "Hi {first_name}," or "Hello {first_name},"
+2. PARAGRAPH 1 (Identity & Intent): Introduce yourself as a software engineer and state directly that
+   you're reaching out regarding potential engineering opportunities at {company_name}.
+3. PARAGRAPH 2 (Grounded Connection): Mention their specific product or recent development
+   ({signal_or_product_name}) and tie it directly to your hands-on experience
+   ({candidate_matching_experience}), mentioning specific frameworks or technologies (e.g. Flutter,
+   FastAPI, Docker, local LLMs/RAG, IoT backends).
+4. PARAGRAPH 3 (Clear Call to Action): Mention that your resume is attached, and ask if they would be
+   open to a brief chat or keeping in touch if they are considering growing their technical team.
+5. NO RHETORICAL QUIZZES: Do not ask them how they build their product or whether they plan to adopt
+   new tech.
+6. NO ROBOTIC OPENINGS: Do NOT start with "The release of X shows a clear focus on..." or "I hope this
+   email finds you well."
+7. Keep paragraphs short (1-2 sentences each). Total length: 75 to 110 words. Plain straight quotes
+   and apostrophes only, no em dashes.
+8. Do NOT write a sign-off or your name at the end. The system attaches that automatically.
 
-4. THE CONNECTION / REAL NEED (2-3 sentences)
-   The most important part. Connect the hook to ONE concrete thing the candidate could specifically
-   help this company with — not a list of skills, one clear, specific connection between what the
-   company is doing/building and what the candidate brings. Frame this around the company's likely
-   need (inferred from the signal, company stage, or the role being hired for), not around the
-   candidate's resume: given what the signal reveals, what real problem might they have that the
-   candidate can speak to? Write toward that problem.
-   Never write: bare skills lists ("I specialize in Flutter, FastAPI, and MQTT"), vague
-   self-assessment ("my background is built for this" / "is built for exactly this"), or buzzword
-   bridging language ("bridge between AI and deployment"). Never write a general claim about a
-   CATEGORY of company ("deploying sensitive health-tech tools usually requires...", "companies at
-   this stage typically need...") — every claim must reference something specific and real about
-   THIS company (the actual signal text), not an inference about companies like them. If there isn't
-   enough specific signal to make a real point, reference the signal more directly and briefly
-   instead of padding with a generalization.
+FEW-SHOT EXAMPLES:
 
-5. THE ASK (1 sentence)
-   One clear, specific, low-friction ask that follows logically from something explicitly stated
-   earlier in THIS email (the specific signal, or the specific connection drawn in part 4) — never
-   an assumption not established in the email itself (e.g. don't ask about "your deployment
-   pipeline" unless the email actually established that a pipeline exists). Never generic ("do you
-   have 10 minutes to chat?") and never passive/weak ("I'd love to send my resume" / "Are you open
-   to..."). Vary the exact wording per email, do not reuse the same ask verbatim across companies.
+Example 1 (AI / NLP Company):
+Subject: Software Engineering / LenguajeNatural.AI - Mohamed Hassen Amara
+Body:
+Hi Alejandro,
 
-SIGN-OFF: "Best," (or similar) then the candidate's actual name on its own line: {candidate_name}
-— never "[Your Name]" or any bracketed placeholder. This name must be filled in every time, zero
-exceptions.
+I'm a software engineer reaching out to see if you have any upcoming engineering needs at
+LenguajeNatural.AI.
 
-═══════════════════════════════════════
-LENGTH & VARIATION
-═══════════════════════════════════════
-- Target 4-6 sentences total across parts 2-4 combined (not counting greeting/sign-off) — enough to
-  justify the ask, not so much it reads as a cover letter. Run slightly longer or shorter depending
-  on how much genuine substance the signal supports; do not pad if there's nothing real to say.
-- Vary sentence rhythm and paragraph breaks across companies — do not let every email fall into an
-  identical 3-paragraph block shape. Some can be 2 short paragraphs, some 3 — it should read like a
-  different person considered each one, not a mail-merge.
+I've been following your work around LeNIA-Chat and localized language models. My recent focus has
+been on building and serving specialized LLM endpoints using FastAPI and Mistral, particularly
+optimizing local inference pipelines and API latency for real-time applications.
 
-═══════════════════════════════════════
-SUBJECT LINE RULES
-═══════════════════════════════════════
-- Must be concrete and specific — reference the actual signal or a direct, plain statement of intent.
-- FORBIDDEN: "Re:", "Fwd:", or anything implying prior correspondence.
-- FORBIDDEN: "X and Y" / "Bridging X and Y" / "X meets Y" template patterns.
-- FORBIDDEN: vague corporate-sounding phrases ("Exploring Synergies", "Following Up on Your Growth").
-  Examples of GOOD subject lines:
-{good_subjects}
-  Examples of BAD subject lines (never write like these):
-{bad_subjects}
+I've attached my CV for your review. If you're open to a brief introductory chat or looking to expand
+your engineering team, I'd love to connect.
 
-═══════════════════════════════════════
-WRITING STYLE — FORBIDDEN PATTERNS
-═══════════════════════════════════════
-- No em dashes (—) or en dashes (–) for dramatic pauses, ever. Use a period or comma instead.
-- No curly/smart quotes or apostrophes (‘ ’ “ ”). Plain straight ' and " only.
-- No "I've been following/admiring [Company]'s [thing]" opener template.
-- No "my background is built for exactly this" or similar self-assessment claims — show relevance
-  through the specific connection in part 4 instead of asserting it abstractly.
-- No bare skills-list sentences ("I specialize in X, Y, and Z").
-- No passive, hedgy asks ("I'd love to..." / "Are you open to...").
-- No generic filler ("I hope this email finds you well", "I am writing to express my interest").
+Example 2 (IoT / Hardware-Cloud Platform):
+Subject: Software Engineering / advanticsys - Mohamed Hassen Amara
+Body:
+Hi Jose,
 
-═══════════════════════════════════════
-FEW-SHOT EXAMPLES (good, full structure — 4 different companies, sectors, and tones)
-═══════════════════════════════════════
-These 4 examples exist to show that the STRUCTURE (greeting, hook, self-intro, connection, ask,
-sign-off) stays fixed while the actual content, sentence rhythm, paragraph count, and framing change
-per company. Do NOT reuse sentence patterns, phrasing, or rhythm from these examples. Each email you
-write must be built from the specific signal and company context given above, not adapted from the
-wording below — these are structural references only, not templates to fill in.
+I'm a software engineer reaching out to explore potential technical opportunities with the advanticsys
+team.
 
---- Example 1: health-tech, product-launch signal, 2 paragraphs ---
-Subject: Vitalis's remote monitoring launch
+I took a close look at your Concordia platform and its edge-to-cloud telemetry infrastructure. I have
+hands-on experience building backend pipelines with FastAPI, Spring Boot, and MQTT brokers for
+real-time sensor and event ingestion, ensuring high reliability across distributed systems.
 
-Hi Priya,
+I've attached my resume with details on my recent projects. Would you have a few minutes for a brief
+introductory conversation this week or next?
 
-Noticed Vitalis just rolled out real-time vitals monitoring for home care patients. I build the
-backend systems that keep health data pipelines reliable under real clinical load, not demo
-conditions.
+---
 
-A remote monitoring feature like this tends to run into trouble specifically around dropped
-connections and delayed readings from patient devices, since that's where continuous vitals data is
-most fragile. I've worked on similar resilience layers for streaming sensor data and can walk through
-what worked.
-
-Would a quick call make sense to compare notes on how you're handling that?
-
-Best,
-Mohamed Hassen Amara
-
---- Example 2: dev-tools startup, technical blog-post signal, 3 short paragraphs, punchy ---
-Subject: Your CLI error-rate breakdown
-
-Hi Marcus,
-
-Read your writeup on the CLI's error log and the retry-storm fix. That's the kind of debugging I end
-up doing a lot of.
-
-I write Python tooling and spend most of my time on CLI ergonomics and agent-facing APIs specifically.
-
-If you're hiring for that kind of work, happy to send over a couple of examples.
-
-Best,
-Mohamed Hassen Amara
-
---- Example 3: e-commerce platform, hiring signal (no product launch to reference), longer ---
-Subject: Your open backend infra role
-
-Hi Elena,
-
-Saw the opening for a backend engineer on Kesh's infra team. Scaling checkout and inventory sync for
-a growing catalog is a different kind of problem than it looks like from the outside.
-
-I'm a backend engineer who has spent most of the last three years on exactly that: high-throughput,
-consistency-sensitive systems.
-
-Given the role's on the infra team specifically, I'd guess sync latency as SKU count grows is closer
-to the actual pain point than anything user-facing. That's the kind of problem I like working on, and
-I'd be glad to talk through specifics if the role's still open.
-
-Best,
-Mohamed Hassen Amara
-
---- Example 4: no strong signal available, activity-summary opener, very short ---
-Subject: Question about Northwind's routing engine
-
-Hi Tomas,
-
-Northwind's real-time route optimization for last-mile delivery is the kind of problem I like
-solving. I build backend systems for exactly that: high-throughput, latency-sensitive routing and
-tracking.
-
-Worth ten minutes to see if there's a fit for what you're building next?
-
-Best,
-Mohamed Hassen Amara
-
-Respond with ONLY a JSON object of this exact shape:
-{{"subject": "<email subject line>", "body": "<full email body, plain text, newlines as \\n>"}}
+Output strictly in this format:
+Subject: <subject line>
+Body:
+<email body>
 """
 
 _SMART_CHAR_MAP = {
@@ -222,29 +136,85 @@ _SMART_CHAR_MAP = {
 
 
 def _sanitize_text(text: str) -> str:
-    """Belt-and-suspenders cleanup: the prompt forbids em dashes and curly
-    quotes, but strip any that slip through anyway rather than sending them."""
+    """Deterministic post-processing step: strip AI typographical artifacts
+    the LLM steps are told to avoid but sometimes emit anyway."""
     for bad, good in _SMART_CHAR_MAP.items():
         text = text.replace(bad, good)
     return text
 
 
-_PLACEHOLDER_RE = re.compile(r"\[\s*your\s*name\s*\]", re.IGNORECASE)
-_ANY_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{1,40}\]")
-_REPLY_PREFIX_RE = re.compile(r"^\s*(re|fwd)\s*:", re.IGNORECASE)
-_DASH_RE = re.compile("[—–]")
+def _build_subject(company_name: str) -> str:
+    """Subject line is never LLM-generated — a fixed, recognizable recruiting
+    format that reliably contains the company name and candidate name, per
+    spec: 'Software Engineering / {Company} - {candidate name}'."""
+    return _sanitize_text(f"Software Engineering / {company_name} - {SENDER_NAME or 'the candidate'}")
 
 
-def _validate_draft(subject: str, body: str) -> None:
-    """Safety net against specific known regressions, run right before a
-    draft is saved — independent of whatever the prompt currently says, so a
-    future prompt tweak can't silently let these back in unnoticed."""
+_ANY_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{1,40}\]|<[A-Za-z][^>\n]{0,40}>")
+
+CONSULTANT_PHRASES = [
+    r"seamless transition",
+    r"balance between",
+    r"strong asset",
+    r"production-ready software",
+    r"support your production roadmap",
+    r"bringing [^.]{0,40} to users",
+    r"testament to",
+    r"\bdelve\b",
+    r"\bspearhead\b",
+    r"shows a clear focus on",
+    r"handles complex end-to-end",
+    r"i hope this email finds you well",
+]
+_CONSULTANT_PHRASE_RES = [re.compile(p, re.IGNORECASE) for p in CONSULTANT_PHRASES]
+
+# Rhetorical tech-stack interrogation ("Are you currently leveraging RAG to...") —
+# the exact pattern this pipeline is meant to have moved away from.
+RHETORICAL_QUESTION_PATTERNS = [
+    r"are you (currently |guys )?(leveraging|handling|using|rolling|planning|running|utilizing)\b[^?]*\?",
+    r"(curious|wondering) (if|whether) you\b[^?]*\?",
+]
+_RHETORICAL_QUESTION_RES = [re.compile(p, re.IGNORECASE) for p in RHETORICAL_QUESTION_PATTERNS]
+
+MIN_BODY_WORDS = 60
+MAX_BODY_WORDS = 130
+
+
+def lint_draft(subject: str, body: str, company_name: str | None = None) -> list[str]:
+    """Automated guardrail run right before a draft is stored — independent
+    of whatever the prompts currently say, so a future prompt tweak can't
+    silently let a known regression back in. Returns a list of violations;
+    a non-empty list means the draft should be flagged as needs_revision
+    rather than saved as ready-to-send."""
+    errors = []
+
+    if re.match(r"^\s*(re|fwd)\s*:", subject, re.IGNORECASE):
+        errors.append("Subject starts with Re:/Fwd:.")
+    if SENDER_NAME and SENDER_NAME not in subject:
+        errors.append("Subject does not contain the candidate's name.")
+    if company_name and company_name not in subject:
+        errors.append("Subject does not contain the company name.")
+
+    for pattern in _CONSULTANT_PHRASE_RES:
+        match = pattern.search(body)
+        if match:
+            errors.append(f"Body contains a consultant-speak/robotic-opening phrase: {match.group(0)!r}.")
+
+    for pattern in _RHETORICAL_QUESTION_RES:
+        match = pattern.search(body)
+        if match:
+            errors.append(f"Body contains a rhetorical tech-stack question: {match.group(0)!r}.")
+
     if _ANY_BRACKET_PLACEHOLDER_RE.search(body):
-        raise ValueError("Generated draft still contains an unfilled bracketed placeholder in the body.")
-    if _REPLY_PREFIX_RE.match(subject):
-        raise ValueError(f"Generated subject line uses a reply prefix (Re:/Fwd:): {subject!r}")
-    if _DASH_RE.search(subject) or _DASH_RE.search(body):
-        raise ValueError("Generated draft contains an em dash or en dash after sanitization.")
+        errors.append("Body contains an unfilled placeholder (e.g. [Name] or <Company>).")
+
+    word_count = len(body.split())
+    if word_count < MIN_BODY_WORDS:
+        errors.append(f"Body is too short ({word_count} words, minimum {MIN_BODY_WORDS}).")
+    if word_count > MAX_BODY_WORDS:
+        errors.append(f"Body is too long ({word_count} words, maximum {MAX_BODY_WORDS}).")
+
+    return errors
 
 
 _state_lock = threading.Lock()
@@ -268,62 +238,143 @@ def _set_state(**kwargs):
         _state.update(kwargs)
 
 
-def generate_draft_content(profile: dict, contact: dict, company: dict) -> tuple[str, str]:
-    """Builds the prompt, calls the local LLM, and returns (subject, body).
-
-    Pure content generation — no DB access — so both the Drafts tab
-    (email_drafts table) and the Queues feature (queue_items table) can
-    share the exact same generation logic.
-
-    Raises OllamaError, ValueError, or KeyError on failure.
-    """
-    contact_name = f"{contact['first_name']} {contact['last_name']}".strip() or "there"
-    contact_first_name = contact.get("first_name") or "there"
-
-    fit_rationale_line = ""
-    if company.get("fit_rationale"):
-        fit_rationale_line = f"Why this candidate is a good fit for this company: {company['fit_rationale']}"
-
-    signals_line = ""
+def _extract_signal_texts(company: dict) -> list[str]:
     signals = company.get("signals")
     if isinstance(signals, str):
         try:
             signals = json.loads(signals)
         except (json.JSONDecodeError, TypeError):
             signals = None
-    if signals:
-        signal_texts = [s.get("text") for s in signals if isinstance(s, dict) and s.get("text")]
-        if signal_texts:
-            signals_line = (
-                "Specific, concrete, recent signals about this company (prefer these over the "
-                "general activity summary as the opening hook):\n"
-                + "\n".join(f"- {t}" for t in signal_texts)
-            )
+    if not signals:
+        return []
+    return [s.get("text") for s in signals if isinstance(s, dict) and s.get("text")]
 
-    prompt = PROMPT_TEMPLATE.format(
-        experience_level=profile.get("experience_level", "unknown"),
-        skills=", ".join(profile.get("skills", [])),
-        target_roles=", ".join(profile.get("target_roles", [])),
-        target_sector_profile=profile.get("target_sector_profile", ""),
-        contact_name=contact_name,
-        contact_first_name=contact_first_name,
-        contact_title=contact.get("title") or "unknown title",
-        company_name=company["name"],
-        activity_summary=company.get("activity_summary") or "unknown",
-        fit_rationale_line=fit_rationale_line,
-        signals_line=signals_line,
-        good_subjects="\n".join(f'  - "{s}"' for s in GOOD_SUBJECT_EXAMPLES),
-        bad_subjects="\n".join(f'  - "{s}"' for s in BAD_SUBJECT_EXAMPLES),
-        candidate_name=SENDER_NAME or "the candidate",
+
+def _run_angle_matcher(profile: dict, company: dict) -> dict | None:
+    """Step 1: pure reasoning, JSON out. Prefers a Tier-1 recent signal, falls
+    back to a Tier-2 core-domain angle when there's no recent news, and only
+    returns None (insufficient_signal) when there is truly zero data —
+    company summary AND signals both empty."""
+    signal_texts = _extract_signal_texts(company)
+    signals_block = "\n".join(f"- {t}" for t in signal_texts) if signal_texts else "(none found)"
+    company_summary = company.get("activity_summary") or ""
+
+    if not company_summary.strip() and not signal_texts:
+        return None
+
+    candidate_profile = (
+        f"Experience level: {profile.get('experience_level', 'unknown')}. "
+        f"Skills: {', '.join(profile.get('skills', []))}. "
+        f"Target roles: {', '.join(profile.get('target_roles', []))}."
+    )
+
+    prompt = ANGLE_MATCHER_PROMPT.format(
+        company_summary=f"{company['name']}: {company_summary or 'unknown'}",
+        signals=signals_block,
+        candidate_profile=candidate_profile,
     )
 
     raw = generate(prompt)
     parsed = parse_json_response(raw)
-    subject = _sanitize_text(parsed["subject"])
-    body = _sanitize_text(parsed["body"])
-    body = _PLACEHOLDER_RE.sub(SENDER_NAME or "the candidate", body)
-    _validate_draft(subject, body)
+    if parsed.get("insufficient_signal"):
+        return None
+    if not parsed.get("signal_or_product_name") or not parsed.get("candidate_matching_experience"):
+        return None
+    return parsed
+
+
+_SUBJECT_BODY_RE = re.compile(r"subject:\s*(.+?)\s*\n+body:\s*\n?(.*)", re.IGNORECASE | re.DOTALL)
+
+# Enough headroom for a full 3-paragraph email so the model's own generation
+# limit isn't what's cutting the closing question off mid-sentence.
+HUMAN_DRAFTER_NUM_PREDICT = 500
+
+
+def _parse_subject_body(raw: str) -> tuple[str, str]:
+    match = _SUBJECT_BODY_RE.search(raw)
+    if not match:
+        raise ValueError(f"Could not parse Subject/Body from model output: {raw[:200]!r}")
+    subject, body = match.group(1).strip(), match.group(2).strip()
+    if not subject or not body:
+        raise ValueError("Model output had an empty subject or body.")
     return subject, body
+
+
+def _run_human_drafter(angle: dict, contact_first_name: str, company_name: str) -> tuple[str, str]:
+    """Step 2: prose writing, plain text out. Only sees Step 1's JSON — never
+    the raw skills/signals lists — so it can't fall back to a skills dump."""
+    prompt = HUMAN_DRAFTER_PROMPT.format(
+        first_name=contact_first_name,
+        company_name=company_name,
+        signal_or_product_name=angle["signal_or_product_name"],
+        candidate_matching_experience=angle["candidate_matching_experience"],
+    )
+    raw = generate(prompt, json_format=False, num_predict=HUMAN_DRAFTER_NUM_PREDICT)
+    return _parse_subject_body(raw)
+
+
+def _is_incomplete(full_body: str) -> bool:
+    """Sanity check on the fully assembled body (with sign-off): too few
+    paragraph breaks or too few words means the draft got cut off mid-way,
+    so it should never be saved as a ready-to-send draft."""
+    return full_body.count("\n\n") < 2 or len(full_body.split()) < 35
+
+
+def generate_draft_content(profile: dict, contact: dict, company: dict) -> dict:
+    """Runs the 3-step pipeline (angle matcher -> human drafter -> deterministic
+    post-processing + lint) and returns:
+        {"status": "drafted" | "needs_revision", "subject": str | None,
+         "body": str | None, "notes": list[str]}
+
+    Pure content generation — no DB access — so both the Drafts tab
+    (email_drafts table) and the Queues feature (queue_items table) can
+    share the exact same generation logic.
+
+    Raises OllamaError, ValueError, or KeyError on hard failures (LLM
+    unreachable, unparseable output) — status/notes only cover *soft*
+    failures (insufficient signal, lint violations) which still get a
+    reviewable row instead of an opaque error.
+    """
+    contact_first_name = contact.get("first_name") or "there"
+
+    angle = _run_angle_matcher(profile, company)
+    if angle is None:
+        return {
+            "status": "needs_revision",
+            "subject": None,
+            "body": None,
+            "notes": [
+                "Step 1 (angle matcher) found zero usable data (no company summary and no signals) "
+                "to build a real email around — skipped generation instead of writing generic filler."
+            ],
+        }
+
+    company_name = company["name"]
+    _model_subject, body = _run_human_drafter(angle, contact_first_name, company_name)
+
+    # Step 3 — deterministic post-processing (code, not LLM). Subject is never
+    # taken from the model — a fixed recruiting-format template guarantees it
+    # cleanly contains the company name and candidate name every time.
+    subject = _build_subject(company_name)
+    body = _sanitize_text(body)
+    cleaned_body = body.strip()
+    full_body = f"{cleaned_body}\n\nBest regards,\n{SENDER_NAME or 'the candidate'}"
+
+    if _is_incomplete(full_body):
+        return {
+            "status": "needs_revision",
+            "subject": subject,
+            "body": full_body,
+            "notes": [
+                "Draft looks incomplete (too few paragraphs or too short) — likely cut off before "
+                "the closing call to action. Regenerate rather than send as-is."
+            ],
+        }
+
+    errors = lint_draft(subject, full_body, company_name)
+    if errors:
+        return {"status": "needs_revision", "subject": subject, "body": full_body, "notes": errors}
+    return {"status": "drafted", "subject": subject, "body": full_body, "notes": []}
 
 
 def fetch_companies_and_contacts(company_ids: list[int], cv_profile_id: int) -> tuple[dict, list[dict]]:
@@ -354,7 +405,7 @@ def fetch_companies_and_contacts(company_ids: list[int], cv_profile_id: int) -> 
 def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     try:
-        subject, body = generate_draft_content(profile, contact, company)
+        result = generate_draft_content(profile, contact, company)
     except (OllamaError, ValueError, KeyError) as e:
         conn.execute(
             "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, status, error, "
@@ -366,13 +417,24 @@ def _draft_one(conn, cv_profile_id: int, profile: dict, contact: dict, company: 
         )
         return
 
+    error = "; ".join(result["notes"]) if result["notes"] else None
     conn.execute(
         "INSERT INTO email_drafts (contact_id, company_id, cv_profile_id, subject, body, status, "
-        "error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'drafted', NULL, ?, ?) "
+        "error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(contact_id) DO UPDATE SET "
         "cv_profile_id=excluded.cv_profile_id, subject=excluded.subject, body=excluded.body, "
-        "status='drafted', error=NULL, updated_at=excluded.updated_at",
-        (contact["id"], company["id"], cv_profile_id, subject, body, now, now),
+        "status=excluded.status, error=excluded.error, updated_at=excluded.updated_at",
+        (
+            contact["id"],
+            company["id"],
+            cv_profile_id,
+            result["subject"],
+            result["body"],
+            result["status"],
+            error,
+            now,
+            now,
+        ),
     )
 
 

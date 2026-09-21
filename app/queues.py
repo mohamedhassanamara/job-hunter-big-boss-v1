@@ -39,12 +39,15 @@ def _run_generation(queue_id: int, profile: dict, companies: dict, contacts: lis
             )
             conn.commit()
             try:
-                subject, body = generate_draft_content(profile, contact, company)
+                result = generate_draft_content(profile, contact, company)
+                error_message = "; ".join(result["notes"]) if result["notes"] else None
+                # send_status stays 'pending' regardless, but the sender loop only ever picks up
+                # items with generation_status = 'drafted', so a needs_revision item is never sent.
                 conn.execute(
-                    "UPDATE queue_items SET subject = ?, body = ?, generation_status = 'drafted', "
-                    "send_status = 'pending', error_message = NULL, updated_at = ? "
+                    "UPDATE queue_items SET subject = ?, body = ?, generation_status = ?, "
+                    "send_status = 'pending', error_message = ?, updated_at = ? "
                     "WHERE queue_id = ? AND contact_id = ?",
-                    (subject, body, now, queue_id, contact["id"]),
+                    (result["subject"], result["body"], result["status"], error_message, now, queue_id, contact["id"]),
                 )
             except (OllamaError, ValueError, KeyError) as e:
                 conn.execute(
@@ -159,13 +162,13 @@ def retry_item(queue_id: int, item_id: int) -> tuple[bool, str | None]:
         ).fetchone()
         if not item:
             return False, "Item not found."
-        if item["send_status"] != "failed":
-            return False, "Only failed items can be retried."
+        if item["send_status"] != "failed" and item["generation_status"] != "needs_revision":
+            return False, "Only failed or needs-revision items can be retried."
 
         queue = conn.execute("SELECT * FROM queues WHERE id = ?", (queue_id,)).fetchone()
         now = datetime.now(timezone.utc).isoformat()
 
-        if item["generation_status"] == "failed":
+        if item["generation_status"] in ("failed", "needs_revision"):
             company = conn.execute("SELECT * FROM companies WHERE id = ?", (item["company_id"],)).fetchone()
             fit = conn.execute(
                 "SELECT fit_rationale FROM fit_scores WHERE company_id = ? AND cv_profile_id = ?",
@@ -181,11 +184,12 @@ def retry_item(queue_id: int, item_id: int) -> tuple[bool, str | None]:
                 "title": item["title"],
             }
             try:
-                subject, body = generate_draft_content(profile, contact_dict, company_dict)
+                result = generate_draft_content(profile, contact_dict, company_dict)
+                error_message = "; ".join(result["notes"]) if result["notes"] else None
                 conn.execute(
-                    "UPDATE queue_items SET subject = ?, body = ?, generation_status = 'drafted', "
-                    "send_status = 'pending', error_message = NULL, updated_at = ? WHERE id = ?",
-                    (subject, body, now, item_id),
+                    "UPDATE queue_items SET subject = ?, body = ?, generation_status = ?, "
+                    "send_status = 'pending', error_message = ?, updated_at = ? WHERE id = ?",
+                    (result["subject"], result["body"], result["status"], error_message, now, item_id),
                 )
             except (OllamaError, ValueError, KeyError) as e:
                 conn.execute(

@@ -809,11 +809,14 @@ function renderQueueItemCard(queueId, item) {
     .map((s) => `<option value="${s}" ${item.review_status === s ? "selected" : ""}>${s.replace("_", " ")}</option>`)
     .join("");
 
+  const needsRevision = item.generation_status === "needs_revision";
+
   card.innerHTML = `
     <div class="flex items-center justify-between gap-2 mb-1">
       <h3>${escapeHtml(contactName)} — ${escapeHtml(item.company_name)}</h3>
       <div class="flex items-center gap-2">
         ${statusBadge(item.review_status)}
+        ${needsRevision ? statusBadge("needs_revision") : ""}
         ${statusBadge(item.send_status)}
       </div>
     </div>
@@ -823,7 +826,7 @@ function renderQueueItemCard(queueId, item) {
     <textarea class="item-body" ${locked ? "disabled" : ""}>${escapeHtml(item.body || "")}</textarea>
     <div class="flex items-center gap-2 flex-wrap">
       ${locked ? "" : '<button class="btn-primary btn-sm save-item-btn">Save</button>'}
-      ${item.send_status === "failed" ? '<button class="btn-ghost btn-sm retry-item-btn">Retry</button>' : ""}
+      ${item.send_status === "failed" || needsRevision ? '<button class="btn-ghost btn-sm retry-item-btn">Retry</button>' : ""}
       <label class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
         Review:
         <select class="field text-xs py-1 review-status-select">${reviewOptions}</select>
@@ -967,18 +970,25 @@ async function loadDrafts() {
     const card = document.createElement("div");
     card.className = "draft-card";
     const contactName = `${d.first_name || ""} ${d.last_name || ""}`.trim();
-    if (d.status === "failed") {
+    if (d.status === "failed" || (d.status === "needs_revision" && !d.subject && !d.body)) {
       card.innerHTML = `
         <h3>${escapeHtml(contactName)} — ${escapeHtml(d.company_name)}</h3>
         <div class="meta">${escapeHtml(d.email || "")} · ${escapeHtml(d.title || "")}</div>
-        <p class="text-sm">${statusBadge("failed")} <span class="text-slate-500 dark:text-slate-400">${escapeHtml(d.error || "unknown error")}</span></p>
+        <p class="text-sm">${statusBadge(d.status)} <span class="text-slate-500 dark:text-slate-400">${escapeHtml(d.error || "unknown error")}</span></p>
       `;
       draftsListDiv.appendChild(card);
       continue;
     }
+    const revisionNotice =
+      d.status === "needs_revision"
+        ? `<p class="text-xs bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 rounded-lg p-2 mb-2">
+             ${statusBadge("needs_revision")} ${escapeHtml(d.error || "Flagged by the automated linter — review before sending.")}
+           </p>`
+        : "";
     card.innerHTML = `
       <h3>${escapeHtml(contactName)} — ${escapeHtml(d.company_name)}</h3>
       <div class="meta">${escapeHtml(d.email || "")} · ${escapeHtml(d.title || "")}</div>
+      ${revisionNotice}
       <input type="text" class="draft-subject" value="${escapeHtml(d.subject || "")}" />
       <textarea class="draft-body">${escapeHtml(d.body || "")}</textarea>
       <div class="flex items-center">

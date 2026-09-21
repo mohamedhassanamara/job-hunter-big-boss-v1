@@ -11,7 +11,7 @@ class OllamaError(Exception):
     pass
 
 
-def generate(prompt: str, json_format: bool = True) -> str:
+def generate(prompt: str, json_format: bool = True, num_predict: int | None = None) -> str:
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
@@ -19,6 +19,11 @@ def generate(prompt: str, json_format: bool = True) -> str:
     }
     if json_format:
         payload["format"] = "json"
+    if num_predict is not None:
+        # Ollama's default num_predict can be low enough on some models to
+        # truncate a multi-paragraph email mid-sentence — callers writing
+        # longer prose pass an explicit floor here.
+        payload["options"] = {"num_predict": num_predict}
 
     try:
         resp = requests.post(
