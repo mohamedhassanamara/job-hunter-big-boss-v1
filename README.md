@@ -62,6 +62,22 @@ every time you want to prep a new outreach batch (new CSV export / updated CV).
   and email quality/personalization matters more here than call-count
   efficiency — a batched prompt asking for several full email bodies at once
   is also more prone to models bleeding details between recipients.
+- **Deep Enrich (Signals)**: done, and separate from the fast enrichment
+  pass above — for each already-enriched company, `python`'s background
+  worker (`app/signals.py`) checks their careers/jobs page, blog/news page,
+  and recent web news for a concrete, specific, recent detail (a launch, an
+  open role, a funding round...) to draft an email opener around, instead of
+  a generic paraphrase of the company's activity summary. Click "Start Deep
+  Enrich" on the Enrich tab — it only processes companies with
+  `enrichment_status = 'done'` and skips any already deep-enriched, same
+  caching discipline as fast enrichment. Progress and results are visible
+  two ways: a persistent summary line ("X/Y companies deep-enriched, Z found
+  a usable hook") above the button that's there even before/after a run (not
+  just while one is active), and a "Signals" column in the companies table
+  with an expandable list per company, or a "no hook found" badge when
+  nothing specific turned up. **Not yet wired into draft generation** — see
+  the "Pre-Send Review" section below for a real example of why that
+  matters and what's next.
 - **Email Queues with scheduled sending**: done. From the Matches tab, select
   up to 20 companies and click "Add to Queue" — this creates a queue, drafts
   one email per contact in the background (reusing the exact same generation
@@ -78,6 +94,47 @@ every time you want to prep a new outreach batch (new CSV export / updated CV).
   than halting the queue — failed items get a "Retry" button. See
   `test_send.py` for a completely standalone SMTP credential check, and the
   "Sending Setup" section below for configuration.
+- **Pre-send review checkpoint**: a manual, Claude-Code-session workflow —
+  no LLM calls from inside the app for this. Each queue item has a
+  `review_status` (`not_reviewed` / `signal_flagged` / `draft_flagged` /
+  `approved`, default `not_reviewed`). `python review_queue.py <queue_id>`
+  packages everything needed to review a queue into
+  `reviews/queue_<id>_review.md`: per item, the raw scraped text signals
+  came from, the extracted signals, the final draft exactly as it would
+  send, and a best-effort guess at which signal the opening used. Hand that
+  file to a Claude Code session and ask it to verify each signal against
+  its source and give a draft-quality verdict (see "Pre-Send Review" below
+  for the prompt to use), then apply the verdicts in bulk with
+  `python apply_review.py <queue_id> <mapping.json>` — no need to click
+  through items one at a time. The Queues tab shows a non-blocking reminder
+  banner ("N of M items not reviewed") above the queue controls and a
+  review-status badge + dropdown per item, but **"Start Sending" is never
+  gated on this** — it's a reminder, not a hard requirement, since you may
+  intentionally skip review on a small trusted batch.
+
+## Pre-Send Review
+
+See **[VERIFY.md](VERIFY.md)** for the simple numbered steps. Summary: run
+`python review_queue.py <queue_id>`, open a Claude Code session in this repo
+and ask it to read `reviews/queue_<id>_review.md`, and for each company give
+two verdicts:
+
+1. **Signal verification** — is the extracted signal faithfully supported
+   by the raw source text, or fabricated/stretched? Flag anything unsupported.
+2. **Draft quality verdict** — good / needs work / weak, with a one-line
+   reason, checking specifically for: generic template language (e.g. "I've
+   been looking into X and the Y focus of your platform," "I believe my
+   background could be a strong asset"), whether the opening hook is
+   genuinely specific to that company or could be copy-pasted anywhere,
+   whether the close is a clear low-friction ask rather than a vague "are
+   you open to a chat," and overall whether the email would get a reply or
+   reads as outreach spam.
+
+Ask for the output as a scannable table (company, signal verdict, draft
+verdict, one-line reason) with anything "weak" or "fabricated" flagged
+clearly. Once you've decided what to do with each item, write a small
+`{"<item_id>": "<review_status>", ...}` JSON file and run `apply_review.py`
+to persist the verdicts in bulk.
 
 ## Sending Setup
 
@@ -220,9 +277,9 @@ cp data/app.db data/backups/app.db.backup-$(date +%Y%m%d-%H%M%S)
   the active CV from the Profile tab's card list and both tables' fit scores
   update to that CV's own independent scores.
 - **Companies table** (step 2) and **ranked matches table** (step 4) are
-  paginated (25 per page) since a real lead list can run into the hundreds —
-  use the status filter on the companies table to jump straight to `failed`
-  ones worth retrying.
+  paginated (10 per page, `PAGE_SIZE` in `static/app.js`) since a real lead
+  list can run into the hundreds — use the status filter on the companies
+  table to jump straight to `failed` ones worth retrying.
 - Status/fit values are shown as colored pill badges (green = done/scored,
   amber = in progress, red = failed, grey = pending/unscored) and fit scores
   are color-coded (green ≥ 80, amber ≥ 50, grey below). Long-running steps

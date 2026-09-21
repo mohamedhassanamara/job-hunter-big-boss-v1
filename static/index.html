@@ -22,10 +22,10 @@
       .pill-green { @apply pill bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
 
       .badge { @apply pill; }
-      .badge-pending, .badge-unscored, .badge-not_started { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
-      .badge-enriching, .badge-scoring, .badge-running { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
-      .badge-done, .badge-scored, .badge-drafted, .badge-sent, .badge-completed { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
-      .badge-failed { @apply badge bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300; }
+      .badge-pending, .badge-unscored, .badge-not_started, .badge-not_reviewed { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
+      .badge-enriching, .badge-scoring, .badge-running, .badge-draft_flagged { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
+      .badge-done, .badge-scored, .badge-drafted, .badge-sent, .badge-completed, .badge-approved { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300; }
+      .badge-failed, .badge-signal_flagged { @apply badge bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300; }
       .badge-draft { @apply badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300; }
       .badge-sending { @apply badge bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300; }
       .badge-paused { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300; }
@@ -168,12 +168,23 @@
       <div id="enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
       <div class="progress-track" id="enrich-progress-track" hidden><div class="progress-fill" id="enrich-progress-fill" style="width:0%"></div></div>
 
-      <div class="flex items-center gap-3 flex-wrap mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
-        <button id="start-deep-enrich-btn" class="btn-ghost">Deep Enrich (Signals)</button>
-        <span class="text-xs text-slate-400">Slower optional pass: careers/blog pages + recent news, for a specific hook in each draft.</span>
+      <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+        <h3 class="text-sm font-semibold mb-1">Deep Enrich (Signals)</h3>
+        <p class="text-xs text-slate-400 mb-3">
+          A slower, optional second pass on top of the enrichment above — for each already-enriched
+          company, it checks their careers/jobs page, blog/news page, and recent web news for a
+          concrete, specific detail (a launch, an open role, a funding round...) to open a draft with,
+          instead of a generic summary of what the company does. Results appear in the
+          <strong>Signals</strong> column below — click a company's "N signals" link to expand them,
+          or "no hook found" means nothing specific was found for that one.
+        </p>
+        <div class="flex items-center gap-3 flex-wrap">
+          <button id="start-deep-enrich-btn" class="btn-ghost">Start Deep Enrich</button>
+          <span id="deep-enrich-summary" class="text-sm text-slate-500 dark:text-slate-400"></span>
+        </div>
+        <div id="deep-enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
+        <div class="progress-track" id="deep-enrich-progress-track" hidden><div class="progress-fill" id="deep-enrich-progress-fill" style="width:0%"></div></div>
       </div>
-      <div id="deep-enrich-progress" class="text-sm text-slate-500 dark:text-slate-400 mt-3"></div>
-      <div class="progress-track" id="deep-enrich-progress-track" hidden><div class="progress-fill" id="deep-enrich-progress-fill" style="width:0%"></div></div>
 
       <p class="text-sm text-slate-500 dark:text-slate-400 mt-3">Fit scores in this table are shown for CV: <strong id="active-cv-label-enrich" class="text-slate-700 dark:text-slate-200">—</strong></p>
       <div class="overflow-x-auto mt-3 border border-slate-200 dark:border-slate-700 rounded-xl">
@@ -245,8 +256,9 @@
       <div class="flex items-center gap-3 flex-wrap mt-4">
         <button id="generate-drafts-btn" class="btn-primary">Generate Drafts for Selected</button>
         <button id="add-to-queue-btn" class="btn-ghost" disabled>Add to Queue</button>
-        <span id="selection-count-label" class="text-sm text-slate-500 dark:text-slate-400"></span>
+        <span class="text-xs text-slate-400">Select 1–20 companies (up to <span id="queue-cap-hint">20</span> contacts per queue).</span>
       </div>
+      <div><span id="selection-count-label" class="text-sm text-slate-500 dark:text-slate-400"></span></div>
     </section>
 
     <section id="tab-drafts" class="tab-panel card hidden">

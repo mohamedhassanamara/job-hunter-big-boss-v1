@@ -8,6 +8,7 @@ const startDeepEnrichBtn = document.getElementById("start-deep-enrich-btn");
 const deepEnrichProgress = document.getElementById("deep-enrich-progress");
 const deepEnrichProgressTrack = document.getElementById("deep-enrich-progress-track");
 const deepEnrichProgressFill = document.getElementById("deep-enrich-progress-fill");
+const deepEnrichSummary = document.getElementById("deep-enrich-summary");
 const refreshBtn = document.getElementById("refresh-companies-btn");
 const statusFilter = document.getElementById("status-filter");
 const companiesTbody = document.querySelector("#companies-table tbody");
@@ -46,7 +47,7 @@ const queueDailyCapLabel = document.getElementById("queue-daily-cap-label");
 const queueSentTodayLabel = document.getElementById("queue-sent-today-label");
 const mailerWarningDiv = document.getElementById("mailer-warning");
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 10;
 let companiesPage = 1;
 let rankedPage = 1;
 let selectedCompanyIds = new Set();
@@ -231,6 +232,20 @@ function beginDeepEnrichPolling() {
   pollDeepEnrichStatus();
 }
 
+async function loadDeepEnrichSummary() {
+  const resp = await fetch("/api/enrich/deep/summary");
+  const s = await resp.json();
+  if (s.eligible === 0) {
+    deepEnrichSummary.textContent = "No companies are enriched yet — run Start Enrichment above first.";
+    return;
+  }
+  deepEnrichSummary.textContent =
+    `${s.done}/${s.eligible} companies deep-enriched so far` +
+    (s.with_signals ? ` (${s.with_signals} found a usable hook)` : "") +
+    (s.running > 0 ? ` — ${s.running} in progress` : "") +
+    (s.failed > 0 ? ` — ${s.failed} failed` : "");
+}
+
 async function pollDeepEnrichStatus() {
   const resp = await fetch("/api/enrich/deep/status");
   const status = await resp.json();
@@ -245,6 +260,7 @@ async function pollDeepEnrichStatus() {
   setProgressBar(deepEnrichProgressTrack, deepEnrichProgressFill, status.done, status.total, status.running);
 
   loadCompanies();
+  loadDeepEnrichSummary();
 
   if (!status.running && deepEnrichPollHandle) {
     clearInterval(deepEnrichPollHandle);
@@ -614,6 +630,10 @@ addToQueueBtn.addEventListener("click", async () => {
   const companyIds = Array.from(selectedCompanyIds);
   if (!companyIds.length) return;
   addToQueueBtn.disabled = true;
+  selectionCountLabel.textContent = "Creating queue...";
+  selectionCountLabel.className = "text-sm text-slate-500 dark:text-slate-400";
+
+  let created;
   try {
     const resp = await fetch("/api/queues", {
       method: "POST",
@@ -622,16 +642,29 @@ addToQueueBtn.addEventListener("click", async () => {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || "Could not create queue");
-    selectedCompanyIds.clear();
-    selectedQueueId = data.id;
-    document.querySelector('.tab-btn[data-tab="queues"]').click();
-    await loadQueuesList();
-    await loadQueueDetail(data.id);
+    created = data;
   } catch (err) {
+    // Only a real failure to create the queue lands here.
     selectionCountLabel.textContent = `Error: ${err.message}`;
     selectionCountLabel.className = "text-sm text-rose-600 dark:text-rose-400";
-  } finally {
     updateSelectionUI();
+    return;
+  }
+
+  // Queue creation already succeeded at this point — anything that goes wrong
+  // below is just a UI refresh hiccup, not a queue-creation failure, so it's
+  // never allowed to overwrite the success message with a scary error.
+  selectionCountLabel.textContent = `Queue "${created.name}" created with ${created.items.length} item(s).`;
+  selectionCountLabel.className = "text-sm text-emerald-600 dark:text-emerald-400";
+  selectedCompanyIds.clear();
+  selectedQueueId = created.id;
+  updateSelectionUI();
+  try {
+    document.querySelector('.tab-btn[data-tab="queues"]').click();
+    await loadQueuesList();
+    await loadQueueDetail(created.id);
+  } catch (err) {
+    console.error("Queue was created successfully, but refreshing the Queues tab failed:", err);
   }
 });
 
@@ -650,6 +683,7 @@ async function loadQueueConfig() {
   queueItemCap = cfg.queue_item_cap;
   queueIntervalLabel.textContent = `${Math.round(cfg.send_interval_seconds / 60)} min`;
   queueCapLabel.textContent = cfg.queue_item_cap;
+  document.getElementById("queue-cap-hint").textContent = cfg.queue_item_cap;
   queueDailyCapLabel.textContent = cfg.daily_send_cap;
   queueSentTodayLabel.textContent = cfg.sent_today;
   mailerWarningDiv.classList.toggle("hidden", cfg.mailer_configured);
@@ -707,6 +741,17 @@ function renderQueueDetail(queue) {
       ? `<span class="text-sm text-slate-500 dark:text-slate-400">Next email in ${formatCountdown(queue.seconds_until_next_send)}</span>`
       : "";
 
+  const notReviewed = queue.not_reviewed_count || 0;
+  const reviewNotice =
+    notReviewed > 0
+      ? `<div class="mt-3 text-sm bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 rounded-lg p-3">
+           ${notReviewed} of ${queue.items.length} item${queue.items.length === 1 ? "" : "s"} not reviewed.
+           Run <code class="px-1 py-0.5 rounded bg-white/60 dark:bg-black/20 text-xs">python review_queue.py ${queue.id}</code>
+           and hand the output to a Claude Code session before sending, or set review status per item below.
+           This is a reminder, not a hard gate — Start Sending still works with unreviewed items.
+         </div>`
+      : "";
+
   queueDetailDiv.innerHTML = `
     <div class="card p-5 mb-4">
       <div class="flex items-center justify-between flex-wrap gap-3">
@@ -720,6 +765,7 @@ function renderQueueDetail(queue) {
           <div class="flex gap-2">${controls.join("")}</div>
         </div>
       </div>
+      ${reviewNotice}
     </div>
     <div id="queue-items" class="space-y-3"></div>
   `;
@@ -751,21 +797,49 @@ function renderQueueItemCard(queueId, item) {
     return card;
   }
 
+  const reviewOptions = ["not_reviewed", "signal_flagged", "draft_flagged", "approved"]
+    .map((s) => `<option value="${s}" ${item.review_status === s ? "selected" : ""}>${s.replace("_", " ")}</option>`)
+    .join("");
+
   card.innerHTML = `
     <div class="flex items-center justify-between gap-2 mb-1">
       <h3>${escapeHtml(contactName)} — ${escapeHtml(item.company_name)}</h3>
-      ${statusBadge(item.send_status)}
+      <div class="flex items-center gap-2">
+        ${statusBadge(item.review_status)}
+        ${statusBadge(item.send_status)}
+      </div>
     </div>
     <div class="meta">${escapeHtml(item.email || "")} · ${escapeHtml(item.title || "")}${item.sent_at ? ` · sent ${formatDate(item.sent_at)}` : ""}</div>
     ${item.error_message ? `<p class="text-xs text-rose-600 dark:text-rose-400 mb-2">${escapeHtml(item.error_message)}</p>` : ""}
     <input type="text" class="item-subject" value="${escapeHtml(item.subject || "")}" ${locked ? "disabled" : ""} />
     <textarea class="item-body" ${locked ? "disabled" : ""}>${escapeHtml(item.body || "")}</textarea>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       ${locked ? "" : '<button class="btn-primary btn-sm save-item-btn">Save</button>'}
       ${item.send_status === "failed" ? '<button class="btn-ghost btn-sm retry-item-btn">Retry</button>' : ""}
+      <label class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+        Review:
+        <select class="field text-xs py-1 review-status-select">${reviewOptions}</select>
+      </label>
       <span class="save-status"></span>
     </div>
   `;
+
+  const reviewSelect = card.querySelector(".review-status-select");
+  reviewSelect.addEventListener("change", async () => {
+    const statusSpan = card.querySelector(".save-status");
+    try {
+      const resp = await fetch(`/api/queues/${queueId}/items/${item.id}/review`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_status: reviewSelect.value }),
+      });
+      if (!resp.ok) throw new Error((await resp.json()).detail || "Update failed");
+      statusSpan.textContent = "Saved.";
+      loadQueuesList();
+    } catch (err) {
+      statusSpan.textContent = `Error: ${err.message}`;
+    }
+  });
 
   const saveBtn = card.querySelector(".save-item-btn");
   if (saveBtn) {
@@ -826,6 +900,7 @@ setInterval(() => {
   loadQueuesList();
   if (selectedQueueId) loadQueueDetail(selectedQueueId);
   loadQueueConfig();
+  loadDeepEnrichSummary();
 }, 5000);
 
 /* ---------- Drafts ---------- */
@@ -915,3 +990,4 @@ loadDrafts();
 loadStats();
 loadQueueConfig();
 loadQueuesList();
+loadDeepEnrichSummary();

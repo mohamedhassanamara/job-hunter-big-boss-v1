@@ -29,6 +29,7 @@ from app.llm import OllamaError
 from app.matching import get_status as get_match_status
 from app.matching import start_matching
 from app.queues import (
+    bulk_set_review_status,
     create_queue,
     ensure_sender_loop_started,
     get_generation_status,
@@ -39,6 +40,7 @@ from app.queues import (
     rename_queue,
     resume_queue,
     retry_item,
+    set_review_status,
     start_queue,
 )
 from app.queues import update_item as update_queue_item
@@ -46,6 +48,18 @@ from app.signals import get_status as get_deep_enrich_status
 from app.signals import start_deep_enrichment
 
 app = FastAPI(title="Local Lead-Matching & Outreach Tool")
+
+
+@app.middleware("http")
+async def no_store_static(request, call_next):
+    """This app is actively edited and reloaded locally — a browser silently
+    serving a stale cached static/app.js or index.html (with none of the
+    latest fixes) is a much worse failure mode than the tiny perf cost of
+    always revalidating a handful of small local files."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.on_event("startup")
@@ -186,6 +200,35 @@ def deep_enrich_start():
 @app.get("/api/enrich/deep/status")
 def deep_enrich_status():
     return get_deep_enrich_status()
+
+
+@app.get("/api/enrich/deep/summary")
+def deep_enrich_summary():
+    """Aggregate counts across companies eligible for deep enrichment
+    (enrichment_status='done'), independent of any run in progress — this is
+    what makes deep-enrichment progress visible even after a page refresh or
+    between runs, not just while it's actively running."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT deep_enrichment_status, COUNT(*) AS n FROM companies "
+            "WHERE enrichment_status = 'done' GROUP BY deep_enrichment_status"
+        ).fetchall()
+        eligible = conn.execute(
+            "SELECT COUNT(*) AS n FROM companies WHERE enrichment_status = 'done'"
+        ).fetchone()["n"]
+        with_signals = conn.execute(
+            "SELECT COUNT(*) AS n FROM companies WHERE enrichment_status = 'done' "
+            "AND signals IS NOT NULL AND signals != '[]'"
+        ).fetchone()["n"]
+    counts = {r["deep_enrichment_status"]: r["n"] for r in rows}
+    return {
+        "eligible": eligible,  # companies with enrichment_status='done', i.e. deep-enrichable
+        "not_started": counts.get("not_started", 0),
+        "running": counts.get("running", 0),
+        "done": counts.get("done", 0),
+        "failed": counts.get("failed", 0),
+        "with_signals": with_signals,  # subset of 'done' that actually found a hook
+    }
 
 
 @app.post("/api/cv/upload")
@@ -414,6 +457,22 @@ def queues_retry_item(queue_id: int, item_id: int):
     if not ok:
         raise HTTPException(status_code=409, detail=error)
     return get_queue(queue_id)
+
+
+@app.put("/api/queues/{queue_id}/items/{item_id}/review")
+def queues_set_review_status(queue_id: int, item_id: int, payload: dict = Body(...)):
+    ok, error = set_review_status(queue_id, item_id, payload.get("review_status", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    return get_queue(queue_id)
+
+
+@app.post("/api/queues/{queue_id}/review/bulk")
+def queues_bulk_review(queue_id: int, payload: dict = Body(...)):
+    updates_raw = payload.get("updates", {})
+    updates = {int(k): v for k, v in updates_raw.items()}
+    updated, warnings = bulk_set_review_status(queue_id, updates)
+    return {"updated": updated, "warnings": warnings, "queue": get_queue(queue_id)}
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")

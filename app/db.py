@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS companies (
     enrichment_status TEXT NOT NULL DEFAULT 'pending',
     enrichment_error TEXT,
     signals TEXT,
+    signals_source_text TEXT,
     deep_enrichment_status TEXT NOT NULL DEFAULT 'not_started',
     deep_enrichment_error TEXT,
     updated_at TEXT
@@ -99,6 +100,7 @@ CREATE TABLE IF NOT EXISTS queue_items (
     body TEXT,
     generation_status TEXT NOT NULL DEFAULT 'pending',
     send_status TEXT NOT NULL DEFAULT 'pending',
+    review_status TEXT NOT NULL DEFAULT 'not_reviewed',
     sent_at TEXT,
     error_message TEXT,
     updated_at TEXT,
@@ -212,6 +214,7 @@ def _migrate_add_signals_columns(conn):
     existing = _columns(conn, "companies")
     for col, ddl in (
         ("signals", "TEXT"),
+        ("signals_source_text", "TEXT"),
         ("deep_enrichment_status", "TEXT NOT NULL DEFAULT 'not_started'"),
         ("deep_enrichment_error", "TEXT"),
     ):
@@ -219,8 +222,14 @@ def _migrate_add_signals_columns(conn):
             conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {ddl}")
 
 
+def _migrate_add_review_status_column(conn):
+    if "review_status" not in _columns(conn, "queue_items"):
+        conn.execute("ALTER TABLE queue_items ADD COLUMN review_status TEXT NOT NULL DEFAULT 'not_reviewed'")
+
+
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate_legacy_single_cv(conn)
         _migrate_add_signals_columns(conn)
+        _migrate_add_review_status_column(conn)

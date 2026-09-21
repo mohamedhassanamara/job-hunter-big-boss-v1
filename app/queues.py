@@ -232,6 +232,47 @@ def rename_queue(queue_id: int, name: str) -> bool:
     return cur.rowcount > 0
 
 
+# ---------- Pre-send review (see review_queue.py / apply_review.py) ----------
+
+VALID_REVIEW_STATUSES = {"not_reviewed", "signal_flagged", "draft_flagged", "approved"}
+
+
+def set_review_status(queue_id: int, item_id: int, review_status: str) -> tuple[bool, str | None]:
+    if review_status not in VALID_REVIEW_STATUSES:
+        return False, f"Invalid review_status: {review_status!r}"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE queue_items SET review_status = ?, updated_at = ? WHERE id = ? AND queue_id = ?",
+            (review_status, datetime.now(timezone.utc).isoformat(), item_id, queue_id),
+        )
+    if cur.rowcount == 0:
+        return False, "Item not found."
+    return True, None
+
+
+def bulk_set_review_status(queue_id: int, updates: dict[int, str]) -> tuple[int, list[str]]:
+    """Applies {item_id: review_status} in one go — used by apply_review.py
+    (and the Queues tab's bulk-paste action) after a Claude Code review
+    session, so verdicts don't have to be applied one item at a time."""
+    updated = 0
+    warnings = []
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        for item_id, status in updates.items():
+            if status not in VALID_REVIEW_STATUSES:
+                warnings.append(f"item {item_id}: invalid status {status!r}, skipped")
+                continue
+            cur = conn.execute(
+                "UPDATE queue_items SET review_status = ?, updated_at = ? WHERE id = ? AND queue_id = ?",
+                (status, now, item_id, queue_id),
+            )
+            if cur.rowcount:
+                updated += 1
+            else:
+                warnings.append(f"item {item_id}: not found in queue {queue_id}")
+    return updated, warnings
+
+
 # ---------- Reading ----------
 
 def list_queues() -> list[dict]:
@@ -249,7 +290,8 @@ def list_queues() -> list[dict]:
                 "SELECT COUNT(*) AS total, "
                 "SUM(CASE WHEN send_status = 'sent' THEN 1 ELSE 0 END) AS sent, "
                 "SUM(CASE WHEN send_status = 'failed' THEN 1 ELSE 0 END) AS failed, "
-                "SUM(CASE WHEN send_status = 'pending' THEN 1 ELSE 0 END) AS pending "
+                "SUM(CASE WHEN send_status = 'pending' THEN 1 ELSE 0 END) AS pending, "
+                "SUM(CASE WHEN review_status = 'not_reviewed' THEN 1 ELSE 0 END) AS not_reviewed "
                 "FROM queue_items WHERE queue_id = ?",
                 (q["id"],),
             ).fetchone()
@@ -278,6 +320,7 @@ def get_queue(queue_id: int) -> dict | None:
     result = dict(queue)
     result["items"] = [dict(i) for i in items]
     result["seconds_until_next_send"] = _seconds_until(result)
+    result["not_reviewed_count"] = sum(1 for i in items if i["review_status"] == "not_reviewed")
     return result
 
 

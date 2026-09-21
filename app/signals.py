@@ -126,27 +126,34 @@ def _deep_enrich_one(conn, company_row) -> None:
     conn.execute("UPDATE companies SET deep_enrichment_status = 'running' WHERE id = ?", (company_id,))
     conn.commit()
 
-    careers_text = blog_text = None
+    careers_url = careers_text = blog_url = blog_text = None
     if website:
-        _, careers_text = _find_page(website, CAREERS_KEYWORDS)
-        _, blog_text = _find_page(website, BLOG_KEYWORDS)
+        careers_url, careers_text = _find_page(website, CAREERS_KEYWORDS)
+        blog_url, blog_text = _find_page(website, BLOG_KEYWORDS)
 
     news_text = _gather_news_text(name)
+    source_text = {
+        "careers_url": careers_url,
+        "careers_text": careers_text,
+        "blog_url": blog_url,
+        "blog_text": blog_text,
+        "news_text": news_text,
+    }
 
     try:
         signals = _synthesize_signals(name, careers_text, blog_text, news_text)
     except (OllamaError, ValueError) as e:
         conn.execute(
             "UPDATE companies SET deep_enrichment_status = 'failed', deep_enrichment_error = ?, "
-            "updated_at = ? WHERE id = ?",
-            (str(e), now, company_id),
+            "signals_source_text = ?, updated_at = ? WHERE id = ?",
+            (str(e), json.dumps(source_text), now, company_id),
         )
         return
 
     conn.execute(
-        "UPDATE companies SET signals = ?, deep_enrichment_status = 'done', deep_enrichment_error = NULL, "
-        "updated_at = ? WHERE id = ?",
-        (json.dumps(signals), now, company_id),
+        "UPDATE companies SET signals = ?, signals_source_text = ?, deep_enrichment_status = 'done', "
+        "deep_enrichment_error = NULL, updated_at = ? WHERE id = ?",
+        (json.dumps(signals), json.dumps(source_text), now, company_id),
     )
 
 
