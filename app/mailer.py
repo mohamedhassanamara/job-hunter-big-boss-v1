@@ -1,7 +1,11 @@
+import mimetypes
 import smtplib
 from datetime import datetime, timezone
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from pathlib import Path
 
 from app.config import (
     DAILY_SEND_CAP,
@@ -23,20 +27,37 @@ def is_configured() -> bool:
     return bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
 
 
-def send_email(to_addr: str, subject: str, body: str) -> None:
-    """Sends one plain-text email via SMTP. Raises on any failure — callers
-    decide how to record that as a failed queue item."""
+def _attach_resume(msg: MIMEMultipart, resume_pdf_path: str | None) -> None:
+    if not resume_pdf_path:
+        return
+    path = Path(resume_pdf_path)
+    if not path.is_file():
+        raise MailerNotConfigured(f"This CV profile's resume PDF is missing on disk: {path}")
+
+    content_type = mimetypes.guess_type(path.name)[0] or "application/pdf"
+    subtype = content_type.split("/", 1)[1]
+    part = MIMEApplication(path.read_bytes(), _subtype=subtype)
+    part.add_header("Content-Disposition", "attachment", filename=path.name)
+    msg.attach(part)
+
+
+def send_email(to_addr: str, subject: str, body: str, resume_pdf_path: str | None = None) -> None:
+    """Sends one email via SMTP, attaching resume_pdf_path (the sending
+    queue's own CV profile's resume, if it has one) when given. Raises on
+    any failure — callers decide how to record that as a failed queue item."""
     if not is_configured():
         raise MailerNotConfigured(
             "GMAIL_ADDRESS / GMAIL_APP_PASSWORD are not set in .env — see .env.example."
         )
 
-    msg = MIMEText(body, "plain", "utf-8")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = formataddr((SENDER_NAME, GMAIL_ADDRESS))
     msg["To"] = to_addr
     if REPLY_TO_ADDRESS:
         msg["Reply-To"] = REPLY_TO_ADDRESS
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    _attach_resume(msg, resume_pdf_path)
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
         server.ehlo()

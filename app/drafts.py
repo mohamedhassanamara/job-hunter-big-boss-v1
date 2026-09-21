@@ -1,10 +1,33 @@
+import json
+import re
 import threading
 from datetime import datetime, timezone
 
+from app.config import SENDER_NAME
 from app.cv import get_active_profile
 from app.db import get_conn
 from app.llm import OllamaError, generate, parse_json_response
 
+GOOD_SUBJECT_EXAMPLES = [
+    "Your LeNIA-Chat-1.5B release",
+    "Question about your edge deployment plans",
+    "Scaling PILoT's mobile layer",
+    "Saw your Series B announcement",
+    "Question about the ML infra team's next hire",
+]
+
+BAD_SUBJECT_EXAMPLES = [
+    "Bridging AI and Mobile for PILoT",
+    "Re: LeNIA-Chat-1.5B and your production pipeline",
+    "Where AI Meets Real-World Impact",
+    "Exploring Synergies",
+    "Following Up on Your Growth",
+]
+
+# Canonical 5-part cold outreach structure — the fixed quality bar for every
+# draft. Length/rhythm still varies naturally per company (how much the
+# signal actually supports), but the shape itself (greeting, hook,
+# self-intro, connection, ask, sign-off) does not.
 PROMPT_TEMPLATE = """You are drafting a short, personalized cold outreach email from a job-seeking \
 candidate to a contact at a company, for the candidate to review and send themselves.
 
@@ -21,18 +44,208 @@ Recipient:
 
 What the company does: {activity_summary}
 {fit_rationale_line}
+{signals_line}
 
-Write a concise, specific, non-generic cold email (under 150 words) that:
-- Is addressed to the recipient by first name
-- Shows the candidate has actually looked at what the company does (reference their activity specifically)
-- Briefly connects the candidate's relevant background to that company's work
-- Ends with a light, low-pressure call to action (e.g. a short call, or just "open to sending my resume")
-- Signs off with "[Your Name]" as a placeholder for the candidate to fill in themselves
-- Avoids generic filler phrases like "I hope this email finds you well" or "I am writing to express my interest"
+═══════════════════════════════════════
+EMAIL STRUCTURE (5 parts, in this exact order, every time)
+═══════════════════════════════════════
+
+1. GREETING
+   "Hi {contact_first_name}," — the contact's real first name, never "there", "Hi team,", or any
+   generic greeting.
+
+2. THE HOOK (1-2 sentences)
+   Open with the single most specific, real signal available for this company (from the signals
+   listed above, if any — a real launch, blog post, hiring signal, news item). This must be
+   something only findable by actually looking at this specific company, never a paraphrase of
+   their generic activity summary ("you focus on AI development" is NOT a hook).
+   Never frame it as a reply ("Re:", "Following up on", "responding to") — this is cold outreach,
+   state that plainly through tone, not through a fake-reply premise.
+   If no signal is listed above, open instead with one specific, real detail from the activity
+   summary — still concrete, never "I've been following your work" or "I've been admiring [Company]'s [thing]".
+
+3. BRIEF SELF-INTRODUCTION (1 sentence)
+   One sentence stating who the candidate is in terms relevant to THIS company, not a skills dump
+   — e.g. "I'm a software engineer who moves AI prototypes into production systems." Phrase this
+   differently each time depending on what's actually relevant to this company. This should read
+   as a natural continuation of the hook, not a separate resume paragraph.
+
+4. THE CONNECTION / REAL NEED (2-3 sentences)
+   The most important part. Connect the hook to ONE concrete thing the candidate could specifically
+   help this company with — not a list of skills, one clear, specific connection between what the
+   company is doing/building and what the candidate brings. Frame this around the company's likely
+   need (inferred from the signal, company stage, or the role being hired for), not around the
+   candidate's resume: given what the signal reveals, what real problem might they have that the
+   candidate can speak to? Write toward that problem.
+   Never write: bare skills lists ("I specialize in Flutter, FastAPI, and MQTT"), vague
+   self-assessment ("my background is built for this" / "is built for exactly this"), or buzzword
+   bridging language ("bridge between AI and deployment"). Never write a general claim about a
+   CATEGORY of company ("deploying sensitive health-tech tools usually requires...", "companies at
+   this stage typically need...") — every claim must reference something specific and real about
+   THIS company (the actual signal text), not an inference about companies like them. If there isn't
+   enough specific signal to make a real point, reference the signal more directly and briefly
+   instead of padding with a generalization.
+
+5. THE ASK (1 sentence)
+   One clear, specific, low-friction ask that follows logically from something explicitly stated
+   earlier in THIS email (the specific signal, or the specific connection drawn in part 4) — never
+   an assumption not established in the email itself (e.g. don't ask about "your deployment
+   pipeline" unless the email actually established that a pipeline exists). Never generic ("do you
+   have 10 minutes to chat?") and never passive/weak ("I'd love to send my resume" / "Are you open
+   to..."). Vary the exact wording per email, do not reuse the same ask verbatim across companies.
+
+SIGN-OFF: "Best," (or similar) then the candidate's actual name on its own line: {candidate_name}
+— never "[Your Name]" or any bracketed placeholder. This name must be filled in every time, zero
+exceptions.
+
+═══════════════════════════════════════
+LENGTH & VARIATION
+═══════════════════════════════════════
+- Target 4-6 sentences total across parts 2-4 combined (not counting greeting/sign-off) — enough to
+  justify the ask, not so much it reads as a cover letter. Run slightly longer or shorter depending
+  on how much genuine substance the signal supports; do not pad if there's nothing real to say.
+- Vary sentence rhythm and paragraph breaks across companies — do not let every email fall into an
+  identical 3-paragraph block shape. Some can be 2 short paragraphs, some 3 — it should read like a
+  different person considered each one, not a mail-merge.
+
+═══════════════════════════════════════
+SUBJECT LINE RULES
+═══════════════════════════════════════
+- Must be concrete and specific — reference the actual signal or a direct, plain statement of intent.
+- FORBIDDEN: "Re:", "Fwd:", or anything implying prior correspondence.
+- FORBIDDEN: "X and Y" / "Bridging X and Y" / "X meets Y" template patterns.
+- FORBIDDEN: vague corporate-sounding phrases ("Exploring Synergies", "Following Up on Your Growth").
+  Examples of GOOD subject lines:
+{good_subjects}
+  Examples of BAD subject lines (never write like these):
+{bad_subjects}
+
+═══════════════════════════════════════
+WRITING STYLE — FORBIDDEN PATTERNS
+═══════════════════════════════════════
+- No em dashes (—) or en dashes (–) for dramatic pauses, ever. Use a period or comma instead.
+- No curly/smart quotes or apostrophes (‘ ’ “ ”). Plain straight ' and " only.
+- No "I've been following/admiring [Company]'s [thing]" opener template.
+- No "my background is built for exactly this" or similar self-assessment claims — show relevance
+  through the specific connection in part 4 instead of asserting it abstractly.
+- No bare skills-list sentences ("I specialize in X, Y, and Z").
+- No passive, hedgy asks ("I'd love to..." / "Are you open to...").
+- No generic filler ("I hope this email finds you well", "I am writing to express my interest").
+
+═══════════════════════════════════════
+FEW-SHOT EXAMPLES (good, full structure — 4 different companies, sectors, and tones)
+═══════════════════════════════════════
+These 4 examples exist to show that the STRUCTURE (greeting, hook, self-intro, connection, ask,
+sign-off) stays fixed while the actual content, sentence rhythm, paragraph count, and framing change
+per company. Do NOT reuse sentence patterns, phrasing, or rhythm from these examples. Each email you
+write must be built from the specific signal and company context given above, not adapted from the
+wording below — these are structural references only, not templates to fill in.
+
+--- Example 1: health-tech, product-launch signal, 2 paragraphs ---
+Subject: Vitalis's remote monitoring launch
+
+Hi Priya,
+
+Noticed Vitalis just rolled out real-time vitals monitoring for home care patients. I build the
+backend systems that keep health data pipelines reliable under real clinical load, not demo
+conditions.
+
+A remote monitoring feature like this tends to run into trouble specifically around dropped
+connections and delayed readings from patient devices, since that's where continuous vitals data is
+most fragile. I've worked on similar resilience layers for streaming sensor data and can walk through
+what worked.
+
+Would a quick call make sense to compare notes on how you're handling that?
+
+Best,
+Mohamed Hassen Amara
+
+--- Example 2: dev-tools startup, technical blog-post signal, 3 short paragraphs, punchy ---
+Subject: Your CLI error-rate breakdown
+
+Hi Marcus,
+
+Read your writeup on the CLI's error log and the retry-storm fix. That's the kind of debugging I end
+up doing a lot of.
+
+I write Python tooling and spend most of my time on CLI ergonomics and agent-facing APIs specifically.
+
+If you're hiring for that kind of work, happy to send over a couple of examples.
+
+Best,
+Mohamed Hassen Amara
+
+--- Example 3: e-commerce platform, hiring signal (no product launch to reference), longer ---
+Subject: Your open backend infra role
+
+Hi Elena,
+
+Saw the opening for a backend engineer on Kesh's infra team. Scaling checkout and inventory sync for
+a growing catalog is a different kind of problem than it looks like from the outside.
+
+I'm a backend engineer who has spent most of the last three years on exactly that: high-throughput,
+consistency-sensitive systems.
+
+Given the role's on the infra team specifically, I'd guess sync latency as SKU count grows is closer
+to the actual pain point than anything user-facing. That's the kind of problem I like working on, and
+I'd be glad to talk through specifics if the role's still open.
+
+Best,
+Mohamed Hassen Amara
+
+--- Example 4: no strong signal available, activity-summary opener, very short ---
+Subject: Question about Northwind's routing engine
+
+Hi Tomas,
+
+Northwind's real-time route optimization for last-mile delivery is the kind of problem I like
+solving. I build backend systems for exactly that: high-throughput, latency-sensitive routing and
+tracking.
+
+Worth ten minutes to see if there's a fit for what you're building next?
+
+Best,
+Mohamed Hassen Amara
 
 Respond with ONLY a JSON object of this exact shape:
 {{"subject": "<email subject line>", "body": "<full email body, plain text, newlines as \\n>"}}
 """
+
+_SMART_CHAR_MAP = {
+    "—": ", ",
+    "–": "-",
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+}
+
+
+def _sanitize_text(text: str) -> str:
+    """Belt-and-suspenders cleanup: the prompt forbids em dashes and curly
+    quotes, but strip any that slip through anyway rather than sending them."""
+    for bad, good in _SMART_CHAR_MAP.items():
+        text = text.replace(bad, good)
+    return text
+
+
+_PLACEHOLDER_RE = re.compile(r"\[\s*your\s*name\s*\]", re.IGNORECASE)
+_ANY_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{1,40}\]")
+_REPLY_PREFIX_RE = re.compile(r"^\s*(re|fwd)\s*:", re.IGNORECASE)
+_DASH_RE = re.compile("[—–]")
+
+
+def _validate_draft(subject: str, body: str) -> None:
+    """Safety net against specific known regressions, run right before a
+    draft is saved — independent of whatever the prompt currently says, so a
+    future prompt tweak can't silently let these back in unnoticed."""
+    if _ANY_BRACKET_PLACEHOLDER_RE.search(body):
+        raise ValueError("Generated draft still contains an unfilled bracketed placeholder in the body.")
+    if _REPLY_PREFIX_RE.match(subject):
+        raise ValueError(f"Generated subject line uses a reply prefix (Re:/Fwd:): {subject!r}")
+    if _DASH_RE.search(subject) or _DASH_RE.search(body):
+        raise ValueError("Generated draft contains an em dash or en dash after sanitization.")
+
 
 _state_lock = threading.Lock()
 _state = {
@@ -65,10 +278,27 @@ def generate_draft_content(profile: dict, contact: dict, company: dict) -> tuple
     Raises OllamaError, ValueError, or KeyError on failure.
     """
     contact_name = f"{contact['first_name']} {contact['last_name']}".strip() or "there"
+    contact_first_name = contact.get("first_name") or "there"
 
     fit_rationale_line = ""
     if company.get("fit_rationale"):
         fit_rationale_line = f"Why this candidate is a good fit for this company: {company['fit_rationale']}"
+
+    signals_line = ""
+    signals = company.get("signals")
+    if isinstance(signals, str):
+        try:
+            signals = json.loads(signals)
+        except (json.JSONDecodeError, TypeError):
+            signals = None
+    if signals:
+        signal_texts = [s.get("text") for s in signals if isinstance(s, dict) and s.get("text")]
+        if signal_texts:
+            signals_line = (
+                "Specific, concrete, recent signals about this company (prefer these over the "
+                "general activity summary as the opening hook):\n"
+                + "\n".join(f"- {t}" for t in signal_texts)
+            )
 
     prompt = PROMPT_TEMPLATE.format(
         experience_level=profile.get("experience_level", "unknown"),
@@ -76,15 +306,24 @@ def generate_draft_content(profile: dict, contact: dict, company: dict) -> tuple
         target_roles=", ".join(profile.get("target_roles", [])),
         target_sector_profile=profile.get("target_sector_profile", ""),
         contact_name=contact_name,
+        contact_first_name=contact_first_name,
         contact_title=contact.get("title") or "unknown title",
         company_name=company["name"],
         activity_summary=company.get("activity_summary") or "unknown",
         fit_rationale_line=fit_rationale_line,
+        signals_line=signals_line,
+        good_subjects="\n".join(f'  - "{s}"' for s in GOOD_SUBJECT_EXAMPLES),
+        bad_subjects="\n".join(f'  - "{s}"' for s in BAD_SUBJECT_EXAMPLES),
+        candidate_name=SENDER_NAME or "the candidate",
     )
 
     raw = generate(prompt)
     parsed = parse_json_response(raw)
-    return parsed["subject"], parsed["body"]
+    subject = _sanitize_text(parsed["subject"])
+    body = _sanitize_text(parsed["body"])
+    body = _PLACEHOLDER_RE.sub(SENDER_NAME or "the candidate", body)
+    _validate_draft(subject, body)
+    return subject, body
 
 
 def fetch_companies_and_contacts(company_ids: list[int], cv_profile_id: int) -> tuple[dict, list[dict]]:
@@ -95,7 +334,7 @@ def fetch_companies_and_contacts(company_ids: list[int], cv_profile_id: int) -> 
         companies = {
             row["id"]: dict(row)
             for row in conn.execute(
-                f"SELECT co.id, co.name, co.activity_summary, fs.fit_rationale FROM companies co "
+                f"SELECT co.id, co.name, co.activity_summary, co.signals, fs.fit_rationale FROM companies co "
                 f"LEFT JOIN fit_scores fs ON fs.company_id = co.id AND fs.cv_profile_id = ? "
                 f"WHERE co.id IN ({placeholders})",
                 [cv_profile_id, *company_ids],

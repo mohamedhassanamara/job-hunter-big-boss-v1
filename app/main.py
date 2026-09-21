@@ -18,6 +18,7 @@ from app.cv import (
     hash_text,
     list_profiles,
     save_profile,
+    save_resume_pdf,
 )
 from app.db import get_conn, init_db
 from app.drafts import get_status as get_draft_status
@@ -31,6 +32,7 @@ from app.matching import start_matching
 from app.queues import (
     bulk_set_review_status,
     create_queue,
+    delete_queue,
     ensure_sender_loop_started,
     get_generation_status,
     get_queue,
@@ -256,7 +258,8 @@ async def upload_cv(file: UploadFile = File(...)):
             status_code=502, detail=f"Model returned an unparseable profile: {e}"
         ) from e
 
-    profile = save_profile(file.filename, text, content_hash, parsed)
+    resume_pdf_path = save_resume_pdf(contents, content_hash) if file.filename.lower().endswith(".pdf") else None
+    profile = save_profile(file.filename, text, content_hash, parsed, resume_pdf_path)
     return {**profile, "reused": False}
 
 
@@ -412,6 +415,15 @@ def queues_rename(queue_id: int, payload: dict = Body(...)):
     if not ok:
         raise HTTPException(status_code=404, detail="Queue not found.")
     return get_queue(queue_id)
+
+
+@app.delete("/api/queues/{queue_id}")
+def queues_delete(queue_id: int):
+    ok, error = delete_queue(queue_id)
+    if not ok:
+        status_code = 404 if error == "Queue not found." else 409
+        raise HTTPException(status_code=status_code, detail=error)
+    return {"deleted": True}
 
 
 @app.get("/api/queues/{queue_id}/generation-status")

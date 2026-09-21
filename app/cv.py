@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pdfplumber
 
+from app.config import CV_UPLOADS_DIR
 from app.db import get_conn
 from app.llm import generate, parse_json_response
 
@@ -58,6 +59,16 @@ def build_profile(text: str) -> dict:
     return parse_json_response(raw)
 
 
+def save_resume_pdf(file_bytes: bytes, content_hash: str) -> str | None:
+    """Saves the uploaded PDF bytes under CV_UPLOADS_DIR, keyed by the CV's
+    content hash, and returns the path to attach to outreach emails for this
+    profile. Returns None for non-PDF uploads (e.g. .txt) — nothing to attach."""
+    CV_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    path = CV_UPLOADS_DIR / f"{content_hash}.pdf"
+    path.write_bytes(file_bytes)
+    return str(path)
+
+
 def find_by_hash(content_hash: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
@@ -66,15 +77,17 @@ def find_by_hash(content_hash: str) -> dict | None:
     return _row_to_profile(row)
 
 
-def save_profile(filename: str, raw_text: str, content_hash: str, parsed: dict) -> dict:
+def save_profile(
+    filename: str, raw_text: str, content_hash: str, parsed: dict, resume_pdf_path: str | None = None
+) -> dict:
     """Inserts a new CV profile and makes it the active one."""
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         conn.execute("UPDATE cv_profiles SET is_active = 0")
         cur = conn.execute(
             "INSERT INTO cv_profiles (filename, content_hash, raw_text, skills, experience_level, "
-            "domains_worked_in, target_roles, target_sector_profile, is_active, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            "domains_worked_in, target_roles, target_sector_profile, resume_pdf_path, is_active, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
             (
                 filename,
                 content_hash,
@@ -84,6 +97,7 @@ def save_profile(filename: str, raw_text: str, content_hash: str, parsed: dict) 
                 json.dumps(parsed.get("domains_worked_in", [])),
                 json.dumps(parsed.get("target_roles", [])),
                 parsed.get("target_sector_profile", ""),
+                resume_pdf_path,
                 now,
                 now,
             ),

@@ -320,6 +320,11 @@ Set in `.env` (see `.env.example`):
 - `REPLY_TO_ADDRESS` — optional, only if replies should go somewhere other than `GMAIL_ADDRESS`.
 - `DAILY_SEND_CAP` — default `500`. A safety net, not an enforced Gmail policy fact.
 
+Each CV profile stores the PDF it was uploaded from (`resume_pdf_path`, saved under `CV_UPLOADS_DIR`,
+default `data/uploads/`). When a queue sends, it attaches the PDF belonging to that queue's own CV
+profile — not a single global resume — since different queues can be built from different CVs.
+Text-only (`.txt`) CV uploads have no PDF to attach, so their queues send without an attachment.
+
 ## Notes on the search/scraping approach
 
 Company website discovery uses a plain DuckDuckGo HTML scrape

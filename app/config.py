@@ -28,5 +28,9 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "").strip()
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
 SENDER_NAME = os.environ.get("SENDER_NAME", "").strip() or GMAIL_ADDRESS
 REPLY_TO_ADDRESS = os.environ.get("REPLY_TO_ADDRESS", "").strip()
+
+# Uploaded CV PDFs are saved here, one file per cv_profiles row (see app/cv.py) —
+# each CV profile carries its own resume_pdf_path, since a user may have several.
+CV_UPLOADS_DIR = Path(os.environ.get("CV_UPLOADS_DIR", str(BASE_DIR / "data" / "uploads")))
 # Practical safety net only — not a guarantee of Google's actual policy, which can change.
 DAILY_SEND_CAP = int(os.environ.get("DAILY_SEND_CAP", "500"))

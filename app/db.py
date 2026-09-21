@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
     domains_worked_in TEXT,
     target_roles TEXT,
     target_sector_profile TEXT,
+    resume_pdf_path TEXT,
     is_active INTEGER NOT NULL DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
@@ -227,9 +228,15 @@ def _migrate_add_review_status_column(conn):
         conn.execute("ALTER TABLE queue_items ADD COLUMN review_status TEXT NOT NULL DEFAULT 'not_reviewed'")
 
 
+def _migrate_add_resume_pdf_path_column(conn):
+    if "resume_pdf_path" not in _columns(conn, "cv_profiles"):
+        conn.execute("ALTER TABLE cv_profiles ADD COLUMN resume_pdf_path TEXT")
+
+
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate_legacy_single_cv(conn)
         _migrate_add_signals_columns(conn)
         _migrate_add_review_status_column(conn)
+        _migrate_add_resume_pdf_path_column(conn)

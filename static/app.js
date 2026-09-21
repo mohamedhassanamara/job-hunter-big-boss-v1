@@ -735,6 +735,9 @@ function renderQueueDetail(queue) {
   if (queue.status === "draft") controls.push('<button class="btn-primary btn-sm" data-action="start">Start Sending</button>');
   if (queue.status === "sending") controls.push('<button class="btn-ghost btn-sm" data-action="pause">Pause</button>');
   if (queue.status === "paused") controls.push('<button class="btn-primary btn-sm" data-action="resume">Resume</button>');
+  if (queue.status !== "sending") {
+    controls.push('<button class="btn-ghost btn-sm text-rose-600 dark:text-rose-400" data-action="delete">Delete</button>');
+  }
 
   const countdown =
     queue.status === "sending" && queue.seconds_until_next_send != null
@@ -773,6 +776,11 @@ function renderQueueDetail(queue) {
   for (const action of ["start", "pause", "resume"]) {
     const btn = queueDetailDiv.querySelector(`[data-action="${action}"]`);
     if (btn) btn.addEventListener("click", () => runQueueAction(queue.id, action));
+  }
+
+  const deleteBtn = queueDetailDiv.querySelector('[data-action="delete"]');
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", () => deleteQueue(queue.id, queue.name));
   }
 
   const itemsDiv = document.getElementById("queue-items");
@@ -879,6 +887,24 @@ function renderQueueItemCard(queueId, item) {
   }
 
   return card;
+}
+
+async function deleteQueue(queueId, name) {
+  if (!confirm(`Delete queue "${name}"? This removes it and all its items and cannot be undone.`)) return;
+  try {
+    const resp = await fetch(`/api/queues/${queueId}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "Could not delete queue");
+    if (selectedQueueId === queueId) {
+      selectedQueueId = null;
+      queueDetailDiv.innerHTML = "";
+    }
+    await loadQueuesList();
+  } catch (err) {
+    queueDetailDiv.insertAdjacentHTML(
+      "afterbegin",
+      `<p class="text-sm text-rose-600 dark:text-rose-400 mb-2">Error: ${escapeHtml(err.message)}</p>`
+    );
+  }
 }
 
 async function runQueueAction(queueId, action) {

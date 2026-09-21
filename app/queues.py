@@ -232,6 +232,21 @@ def rename_queue(queue_id: int, name: str) -> bool:
     return cur.rowcount > 0
 
 
+def delete_queue(queue_id: int) -> tuple[bool, str | None]:
+    """Deletes a queue and its items. Refuses while the queue is actively
+    sending, so an in-flight send can't be pulled out from under itself —
+    pause it first."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT status FROM queues WHERE id = ?", (queue_id,)).fetchone()
+        if not row:
+            return False, "Queue not found."
+        if row["status"] == "sending":
+            return False, "Queue is currently sending — pause it first, then delete."
+        conn.execute("DELETE FROM queue_items WHERE queue_id = ?", (queue_id,))
+        conn.execute("DELETE FROM queues WHERE id = ?", (queue_id,))
+    return True, None
+
+
 # ---------- Pre-send review (see review_queue.py / apply_review.py) ----------
 
 VALID_REVIEW_STATUSES = {"not_reviewed", "signal_flagged", "draft_flagged", "approved"}
@@ -394,6 +409,14 @@ def _send_next_item(queue_id: int):
             (queue_id,),
         ).fetchone()
 
+        if item:
+            cv_row = conn.execute(
+                "SELECT cv.resume_pdf_path FROM queues q "
+                "LEFT JOIN cv_profiles cv ON cv.id = q.cv_profile_id WHERE q.id = ?",
+                (queue_id,),
+            ).fetchone()
+            resume_pdf_path = cv_row["resume_pdf_path"] if cv_row else None
+
         if not item:
             remaining = conn.execute(
                 "SELECT COUNT(*) AS n FROM queue_items WHERE queue_id = ? AND send_status = 'pending'",
@@ -412,7 +435,7 @@ def _send_next_item(queue_id: int):
         now = datetime.now(timezone.utc).isoformat()
         next_at = (datetime.now(timezone.utc) + timedelta(seconds=QUEUE_SEND_INTERVAL_SECONDS)).isoformat()
         try:
-            send_email(item["email"], item["subject"], item["body"])
+            send_email(item["email"], item["subject"], item["body"], resume_pdf_path)
         except Exception as e:  # noqa: BLE001 - record and move on, never halt the queue
             conn.execute(
                 "UPDATE queue_items SET send_status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",
