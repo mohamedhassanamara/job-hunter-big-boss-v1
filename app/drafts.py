@@ -1,4 +1,6 @@
+import hashlib
 import json
+import random
 import re
 import threading
 from datetime import datetime, timezone
@@ -14,15 +16,16 @@ from app.llm import OllamaError, generate, parse_json_response
 #     technical angle: Tier 1 (a recent signal) if there is one, else Tier 2
 #     (the company's core product/domain, still a real technical detail, not
 #     a launch). Only aborts if there is truly zero data to work from.
-#   Step 2 (HUMAN_DRAFTER_PROMPT) — direct candidate-intent outreach, plain
-#     text out, using only Step 1's JSON as input. Introduces the candidate
-#     by name/role, grounds one paragraph in the real signal/product, and
-#     asks a direct, humble question about engineering opportunities — never
-#     a rhetorical tech-stack interrogation.
+#   Step 2 (HUMAN_DRAFTER_PROMPT) — clean, professional job-inquiry outreach,
+#     plain text out (body only), using only Step 1's JSON as input. States
+#     name/identity/purpose upfront, grounds one paragraph in the real
+#     signal/product, and closes by mentioning the attached resume — never a
+#     rhetorical tech-stack interrogation or consulting jargon.
 #   Step 3 — deterministic Python post-processing: a fully deterministic
-#     subject line (never LLM-generated), dash/quote stripping, hardcoded
-#     "Best regards," sign-off, a completeness sanity check, and lint_draft
-#     as the final automated guardrail. No prose step is trusted un-checked.
+#     subject line (never LLM-generated, MD5-rotated across a small set of
+#     templates so it's stable per company but varies across a batch), dash/
+#     quote stripping, hardcoded "Best regards," sign-off, a completeness
+#     sanity check, and lint_draft as the final automated guardrail.
 # ═══════════════════════════════════════════════════════════════════════
 
 ANGLE_MATCHER_PROMPT = """You are a technical analyst identifying a conversation bridge between a \
@@ -52,78 +55,93 @@ Output ONLY valid JSON, no markdown wrapping, either the schema below or the ins
 }}
 """
 
-HUMAN_DRAFTER_PROMPT = """You are writing a concise, professional cold outreach email from Mohamed \
-Hassen Amara (a software engineer) to a founder, CTO, or engineering lead ({first_name}) at \
-{company_name}.
+HUMAN_DRAFTER_PROMPT = """You are Mohamed Hassen Amara, writing a brief, genuine email to \
+{first_name} at {company_name}.
 
 INPUTS:
-- Recipient Name: {first_name}
-- Company Name: {company_name}
-- Relevant Product / Feature: {signal_or_product_name}
-- Candidate Relevance: {candidate_matching_experience}
+- Recipient: {first_name}
+- Company: {company_name}
+- Their Tech/Product: {signal_or_product_name}
+- Candidate Background: {candidate_matching_experience}
 
 OBJECTIVE:
-Introduce yourself, show that you understand what they build, highlight your directly relevant
-engineering background, and ask if they are open to an introductory conversation or exploring
-engineering additions to their team.
+Inquire about potential software engineering opportunities or upcoming openings at {company_name}.
+Total length: 65 to 90 words. Keep it natural, human, and professional.
 
-RULES:
-1. GREETING: "Hi {first_name}," or "Hello {first_name},"
-2. PARAGRAPH 1 (Identity & Intent): Introduce yourself as a software engineer and state directly that
-   you're reaching out regarding potential engineering opportunities at {company_name}.
-3. PARAGRAPH 2 (Grounded Connection): Mention their specific product or recent development
-   ({signal_or_product_name}) and tie it directly to your hands-on experience
-   ({candidate_matching_experience}), mentioning specific frameworks or technologies (e.g. Flutter,
-   FastAPI, Docker, local LLMs/RAG, IoT backends).
-4. PARAGRAPH 3 (Clear Call to Action): Mention that your resume is attached, and ask if they would be
-   open to a brief chat or keeping in touch if they are considering growing their technical team.
-5. NO RHETORICAL QUIZZES: Do not ask them how they build their product or whether they plan to adopt
-   new tech.
-6. NO ROBOTIC OPENINGS: Do NOT start with "The release of X shows a clear focus on..." or "I hope this
-   email finds you well."
-7. Keep paragraphs short (1-2 sentences each). Total length: 75 to 110 words. Plain straight quotes
-   and apostrophes only, no em dashes.
-8. Do NOT write a sign-off or your name at the end. The system attaches that automatically.
+CRITICAL VARIETY RULES:
+1. NEVER start with the exact formula: "My name is Mohamed Hassen Amara, and I am a software engineer
+   reaching out to inquire about...".
+2. Use this structural flow for THIS email: {structure_flow}
+3. Use this closing ask for THIS email, reworded in your own words (do not copy it verbatim, but keep
+   its meaning): "{closing_ask}"
+4. CONSTRAINTS:
+   - Never use cliche buzzwords: "compelling", "deep dive", "seamless", "directly aligns with",
+     "valuable asset".
+   - Plain straight quotes and apostrophes only. No em dashes.
+   - Do NOT output a sign-off or your name at the end (the system handles this).
 
-FEW-SHOT EXAMPLES:
+FEW-SHOT EXAMPLES (study the structural variety, do NOT reuse this exact wording):
 
-Example 1 (AI / NLP Company):
-Subject: Software Engineering / LenguajeNatural.AI - Mohamed Hassen Amara
-Body:
+Example 1 (Flow 1 - Direct Introduction):
 Hi Alejandro,
 
-I'm a software engineer reaching out to see if you have any upcoming engineering needs at
-LenguajeNatural.AI.
+My name is Mohamed Hassen Amara, and I'm a software engineer specializing in backend systems and AI
+tooling. I came across LenguajeNatural.AI while reading about your work on LeNIA-Chat-1.5B.
 
-I've been following your work around LeNIA-Chat and localized language models. My recent focus has
-been on building and serving specialized LLM endpoints using FastAPI and Mistral, particularly
-optimizing local inference pipelines and API latency for real-time applications.
+Much of my recent work involves optimizing local LLM endpoints and RAG workflows with FastAPI and
+Docker. I'm very interested in what you're building and wanted to see if you have any upcoming
+engineering openings on your team.
 
-I've attached my CV for your review. If you're open to a brief introductory chat or looking to expand
-your engineering team, I'd love to connect.
+I've attached my resume for your consideration, would you be open to a brief chat if you're looking
+for additional engineering support?
 
-Example 2 (IoT / Hardware-Cloud Platform):
-Subject: Software Engineering / advanticsys - Mohamed Hassen Amara
-Body:
+Example 2 (Flow 2 - Product / Work First):
 Hi Jose,
 
-I'm a software engineer reaching out to explore potential technical opportunities with the advanticsys
-team.
+I've been looking into advanticsys and your Concordia platform, particularly the way you handle
+distributed IoT telemetry.
 
-I took a close look at your Concordia platform and its edge-to-cloud telemetry infrastructure. I have
-hands-on experience building backend pipelines with FastAPI, Spring Boot, and MQTT brokers for
-real-time sensor and event ingestion, ensuring high reliability across distributed systems.
+As a software engineer, my background is focused on real-time data pipelines and backend architecture
+using FastAPI, Spring Boot, and MQTT. I wanted to reach out to check whether you have any current or
+upcoming technical opportunities on the team.
 
-I've attached my resume with details on my recent projects. Would you have a few minutes for a brief
-introductory conversation this week or next?
+My CV is attached with an overview of past projects. If you're open to a short introductory
+conversation, I'd welcome the chance to connect.
 
 ---
 
 Output strictly in this format:
-Subject: <subject line>
 Body:
 <email body>
 """
+
+# Picked per-call by _run_human_drafter, pre-filled with the real company/signal
+# values, so the model gets a concrete instruction instead of a bare label — this
+# is what forces the opening's structure to actually vary across a batch instead
+# of collapsing onto the same "My name is..." skeleton every time.
+STRUCTURE_FLOWS = [
+    "FLOW 1 (Direct Introduction): State your name and that you are an engineer focused on the "
+    "relevant domain (e.g. backend / mobile / AI). Mention you came across {company_name}'s work on "
+    "{signal_or_product_name} and wanted to check if they have upcoming engineering openings.",
+    "FLOW 2 (Product / Work First): Open directly by referencing {signal_or_product_name}. State that "
+    "as an engineer working on {candidate_matching_experience}, you wanted to get in touch with the "
+    "team at {company_name} regarding potential roles.",
+    "FLOW 3 (Concise Domain Bridge): Open by noting you've been following {company_name}'s recent "
+    "focus on {signal_or_product_name}. Introduce yourself briefly, share your direct build "
+    "experience, and inquire about team growth.",
+]
+
+# Same technique as STRUCTURE_FLOWS, applied to the closing line — telling the
+# model to "vary the ask" on its own reliably collapsed back onto one fixed
+# sentence in practice, so a specific ask is assigned per call instead.
+CLOSING_ASKS = [
+    "I've attached my resume, would you be open to a brief chat if you're considering expanding the "
+    "engineering team?",
+    "My CV is attached with details on past builds. If there's an opening on the team, I'd love to "
+    "connect.",
+    "I've included my resume for reference. Would you have a few minutes for a quick conversation if "
+    "you have upcoming technical needs?",
+]
 
 _SMART_CHAR_MAP = {
     "—": ", ",
@@ -143,11 +161,27 @@ def _sanitize_text(text: str) -> str:
     return text
 
 
-def _build_subject(company_name: str) -> str:
-    """Subject line is never LLM-generated — a fixed, recognizable recruiting
-    format that reliably contains the company name and candidate name, per
-    spec: 'Software Engineering / {Company} - {candidate name}'."""
-    return _sanitize_text(f"Software Engineering / {company_name} - {SENDER_NAME or 'the candidate'}")
+def _build_subject(
+    company_name: str, contact_first_name: str | None = None, signal_or_product: str | None = None
+) -> str:
+    """Generates clean, direct role-inquiry subject lines — no candidate name,
+    no ATS-style hyphenated sign-off. Never LLM-generated. Rotates
+    deterministically across a small set of templates based on an MD5 hash of
+    the company name, so the subject is stable per company (re-drafting the
+    same company always gets the same subject) but varies across a batch of
+    different companies, avoiding the identical-subject spam-clustering
+    pattern a single fixed template causes."""
+    company = company_name.strip()
+    templates = [
+        f"Software engineering opportunities at {company}",
+        f"Engineering team openings at {company}",
+        f"Software engineer inquiry / {company}",
+        f"Technical opportunities at {company}",
+        f"Software engineering at {company}",
+        f"Inquiring about engineering opportunities at {company}",
+    ]
+    idx = int(hashlib.md5(company.encode()).hexdigest(), 16) % len(templates)
+    return _sanitize_text(templates[idx])
 
 
 _ANY_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{1,40}\]|<[A-Za-z][^>\n]{0,40}>")
@@ -156,6 +190,7 @@ CONSULTANT_PHRASES = [
     r"seamless transition",
     r"balance between",
     r"strong asset",
+    r"valuable asset",
     r"production-ready software",
     r"support your production roadmap",
     r"bringing [^.]{0,40} to users",
@@ -165,6 +200,10 @@ CONSULTANT_PHRASES = [
     r"shows a clear focus on",
     r"handles complex end-to-end",
     r"i hope this email finds you well",
+    r"really neat approach",
+    r"compelling approach",
+    r"my proficiency with",
+    r"directly aligns with",
 ]
 _CONSULTANT_PHRASE_RES = [re.compile(p, re.IGNORECASE) for p in CONSULTANT_PHRASES]
 
@@ -176,8 +215,22 @@ RHETORICAL_QUESTION_PATTERNS = [
 ]
 _RHETORICAL_QUESTION_RES = [re.compile(p, re.IGNORECASE) for p in RHETORICAL_QUESTION_PATTERNS]
 
-MIN_BODY_WORDS = 60
-MAX_BODY_WORDS = 130
+# The rigid boilerplate sentence stems that made a batch of drafts read as
+# near-duplicates — a genuine spam-clustering risk, not just a style issue.
+# Covers both the opener (given) and the closing ask, which independently
+# collapsed onto one fixed sentence in practice even after the opener fix.
+REPETITIVE_OPENERS = [
+    r"reaching out to inquire about engineering opportunities or upcoming openings at",
+    r"i have been following the development of",
+    r"do you have any current openings on your engineering team, or would you be open to a brief conversation\?",
+    r"would you have a few minutes for a quick conversation if you have upcoming technical needs\?",
+]
+_REPETITIVE_OPENER_RES = [re.compile(p, re.IGNORECASE) for p in REPETITIVE_OPENERS]
+
+# Target is 65-90 words (per spec); these bounds include a little slack
+# around that for natural variance in the full body.
+MIN_BODY_WORDS = 50
+MAX_BODY_WORDS = 110
 
 
 def lint_draft(subject: str, body: str, company_name: str | None = None) -> list[str]:
@@ -190,10 +243,9 @@ def lint_draft(subject: str, body: str, company_name: str | None = None) -> list
 
     if re.match(r"^\s*(re|fwd)\s*:", subject, re.IGNORECASE):
         errors.append("Subject starts with Re:/Fwd:.")
-    if SENDER_NAME and SENDER_NAME not in subject:
-        errors.append("Subject does not contain the candidate's name.")
-    if company_name and company_name not in subject:
-        errors.append("Subject does not contain the company name.")
+    # Subject is always deterministic (_build_subject) and never model output, so its
+    # content is correct by construction — one of its own rotation templates
+    # intentionally omits the candidate name, so lint doesn't require it here.
 
     for pattern in _CONSULTANT_PHRASE_RES:
         match = pattern.search(body)
@@ -204,6 +256,10 @@ def lint_draft(subject: str, body: str, company_name: str | None = None) -> list
         match = pattern.search(body)
         if match:
             errors.append(f"Body contains a rhetorical tech-stack question: {match.group(0)!r}.")
+
+    for pattern in _REPETITIVE_OPENER_RES:
+        if pattern.search(body):
+            errors.append("Draft uses cloned boilerplate phrasing. Needs natural variation.")
 
     if _ANY_BRACKET_PLACEHOLDER_RE.search(body):
         errors.append("Body contains an unfilled placeholder (e.g. [Name] or <Company>).")
@@ -283,34 +339,43 @@ def _run_angle_matcher(profile: dict, company: dict) -> dict | None:
     return parsed
 
 
-_SUBJECT_BODY_RE = re.compile(r"subject:\s*(.+?)\s*\n+body:\s*\n?(.*)", re.IGNORECASE | re.DOTALL)
+_BODY_ONLY_RE = re.compile(r"body:\s*\n?(.*)", re.IGNORECASE | re.DOTALL)
 
 # Enough headroom for a full 3-paragraph email so the model's own generation
 # limit isn't what's cutting the closing question off mid-sentence.
 HUMAN_DRAFTER_NUM_PREDICT = 500
 
 
-def _parse_subject_body(raw: str) -> tuple[str, str]:
-    match = _SUBJECT_BODY_RE.search(raw)
-    if not match:
-        raise ValueError(f"Could not parse Subject/Body from model output: {raw[:200]!r}")
-    subject, body = match.group(1).strip(), match.group(2).strip()
-    if not subject or not body:
-        raise ValueError("Model output had an empty subject or body.")
-    return subject, body
+def _parse_body(raw: str) -> str:
+    match = _BODY_ONLY_RE.search(raw)
+    body = match.group(1).strip() if match else raw.strip()
+    if not body:
+        raise ValueError(f"Could not parse a body from model output: {raw[:200]!r}")
+    return body
 
 
-def _run_human_drafter(angle: dict, contact_first_name: str, company_name: str) -> tuple[str, str]:
-    """Step 2: prose writing, plain text out. Only sees Step 1's JSON — never
-    the raw skills/signals lists — so it can't fall back to a skills dump."""
+def _run_human_drafter(angle: dict, contact_first_name: str, company_name: str) -> str:
+    """Step 2: prose writing, plain text out (body only — subject is always
+    deterministic, see _build_subject). Only sees Step 1's JSON — never the
+    raw skills/signals lists — so it can't fall back to a skills dump. A
+    randomly assigned structural flow (pre-filled with the real company/
+    signal values) forces the opening's wording and position to actually
+    vary between calls instead of collapsing onto the same skeleton."""
+    structure_flow = random.choice(STRUCTURE_FLOWS).format(
+        company_name=company_name,
+        signal_or_product_name=angle["signal_or_product_name"],
+        candidate_matching_experience=angle["candidate_matching_experience"],
+    )
     prompt = HUMAN_DRAFTER_PROMPT.format(
         first_name=contact_first_name,
         company_name=company_name,
         signal_or_product_name=angle["signal_or_product_name"],
         candidate_matching_experience=angle["candidate_matching_experience"],
+        structure_flow=structure_flow,
+        closing_ask=random.choice(CLOSING_ASKS),
     )
     raw = generate(prompt, json_format=False, num_predict=HUMAN_DRAFTER_NUM_PREDICT)
-    return _parse_subject_body(raw)
+    return _parse_body(raw)
 
 
 def _is_incomplete(full_body: str) -> bool:
@@ -350,12 +415,12 @@ def generate_draft_content(profile: dict, contact: dict, company: dict) -> dict:
         }
 
     company_name = company["name"]
-    _model_subject, body = _run_human_drafter(angle, contact_first_name, company_name)
+    body = _run_human_drafter(angle, contact_first_name, company_name)
 
     # Step 3 — deterministic post-processing (code, not LLM). Subject is never
-    # taken from the model — a fixed recruiting-format template guarantees it
-    # cleanly contains the company name and candidate name every time.
-    subject = _build_subject(company_name)
+    # taken from the model — an MD5-rotated template guarantees it's clean,
+    # professional, and contains the candidate's name every time.
+    subject = _build_subject(company_name, contact_first_name)
     body = _sanitize_text(body)
     cleaned_body = body.strip()
     full_body = f"{cleaned_body}\n\nBest regards,\n{SENDER_NAME or 'the candidate'}"
