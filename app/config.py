@@ -21,8 +21,8 @@ FREE_EMAIL_DOMAINS = {
 QUEUE_ITEM_CAP = int(os.environ.get("QUEUE_ITEM_CAP", "20"))
 # Each send is spaced by a random interval in this range (not a fixed gap) to avoid
 # the perfectly-regular cadence that bot/spam detection looks for.
-QUEUE_SEND_INTERVAL_MIN_SECONDS = int(os.environ.get("QUEUE_SEND_INTERVAL_MIN_SECONDS", str(7 * 60)))
-QUEUE_SEND_INTERVAL_MAX_SECONDS = int(os.environ.get("QUEUE_SEND_INTERVAL_MAX_SECONDS", str(20 * 60)))
+QUEUE_SEND_INTERVAL_MIN_SECONDS = int(os.environ.get("QUEUE_SEND_INTERVAL_MIN_SECONDS", str(5 * 60)))
+QUEUE_SEND_INTERVAL_MAX_SECONDS = int(os.environ.get("QUEUE_SEND_INTERVAL_MAX_SECONDS", str(7 * 60)))
 SENDER_LOOP_POLL_SECONDS = int(os.environ.get("SENDER_LOOP_POLL_SECONDS", "20"))
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
