@@ -1,13 +1,26 @@
+import random
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from app.config import DAILY_SEND_CAP, QUEUE_ITEM_CAP, QUEUE_SEND_INTERVAL_SECONDS, SENDER_LOOP_POLL_SECONDS
+from app.config import (
+    DAILY_SEND_CAP,
+    QUEUE_ITEM_CAP,
+    QUEUE_SEND_INTERVAL_MAX_SECONDS,
+    QUEUE_SEND_INTERVAL_MIN_SECONDS,
+    SENDER_LOOP_POLL_SECONDS,
+)
 from app.cv import get_active_profile, get_profile_by_id
 from app.db import get_conn
 from app.drafts import fetch_companies_and_contacts, generate_draft_content
 from app.llm import OllamaError
 from app.mailer import daily_cap_reached, get_sent_today_count, is_configured, send_email
+
+def _random_send_interval_seconds() -> int:
+    """A fresh random delay per email (not a fixed gap) to keep the cadence
+    from looking automated to bot/spam detection."""
+    return random.randint(QUEUE_SEND_INTERVAL_MIN_SECONDS, QUEUE_SEND_INTERVAL_MAX_SECONDS)
+
 
 # ---------- Draft-content generation (runs once per queue, right after creation) ----------
 
@@ -145,7 +158,7 @@ def resume_queue(queue_id: int) -> tuple[bool, str | None]:
         if row["status"] != "paused":
             return False, "Queue is not paused."
         now = datetime.now(timezone.utc)
-        next_at = (now + timedelta(seconds=QUEUE_SEND_INTERVAL_SECONDS)).isoformat()
+        next_at = (now + timedelta(seconds=_random_send_interval_seconds())).isoformat()
         conn.execute(
             "UPDATE queues SET status = 'sending', next_send_at = ?, updated_at = ? WHERE id = ?",
             (next_at, now.isoformat(), queue_id),
@@ -208,6 +221,21 @@ def retry_item(queue_id: int, item_id: int) -> tuple[bool, str | None]:
                 "UPDATE queues SET status = 'sending', next_send_at = ?, updated_at = ? WHERE id = ?",
                 (now, now, queue_id),
             )
+    return True, None
+
+
+def remove_item(queue_id: int, item_id: int) -> tuple[bool, str | None]:
+    """Removes a single item from a queue (not the underlying company/contact).
+    Refuses once the item has already been sent — a sent email can't be un-sent."""
+    with get_conn() as conn:
+        item = conn.execute(
+            "SELECT send_status FROM queue_items WHERE id = ? AND queue_id = ?", (item_id, queue_id)
+        ).fetchone()
+        if not item:
+            return False, "Item not found."
+        if item["send_status"] == "sent":
+            return False, "This item has already been sent and can no longer be removed."
+        conn.execute("DELETE FROM queue_items WHERE id = ? AND queue_id = ?", (item_id, queue_id))
     return True, None
 
 
@@ -353,7 +381,8 @@ def _seconds_until(queue: dict) -> int | None:
 def get_send_config() -> dict:
     return {
         "queue_item_cap": QUEUE_ITEM_CAP,
-        "send_interval_seconds": QUEUE_SEND_INTERVAL_SECONDS,
+        "send_interval_min_seconds": QUEUE_SEND_INTERVAL_MIN_SECONDS,
+        "send_interval_max_seconds": QUEUE_SEND_INTERVAL_MAX_SECONDS,
         "daily_send_cap": DAILY_SEND_CAP,
         "sent_today": get_sent_today_count(),
         "mailer_configured": is_configured(),
@@ -409,17 +438,19 @@ def _send_next_item(queue_id: int):
         item = conn.execute(
             "SELECT qi.*, c.email FROM queue_items qi JOIN contacts c ON c.id = qi.contact_id "
             "WHERE qi.queue_id = ? AND qi.send_status = 'pending' AND qi.generation_status = 'drafted' "
+            "AND qi.review_status = 'approved' "
             "ORDER BY qi.position LIMIT 1",
             (queue_id,),
         ).fetchone()
 
         if item:
             cv_row = conn.execute(
-                "SELECT cv.resume_pdf_path FROM queues q "
+                "SELECT cv.resume_pdf_path, cv.filename FROM queues q "
                 "LEFT JOIN cv_profiles cv ON cv.id = q.cv_profile_id WHERE q.id = ?",
                 (queue_id,),
             ).fetchone()
             resume_pdf_path = cv_row["resume_pdf_path"] if cv_row else None
+            resume_filename = cv_row["filename"] if cv_row else None
 
         if not item:
             remaining = conn.execute(
@@ -437,9 +468,9 @@ def _send_next_item(queue_id: int):
             return  # try again next tick; stays capped until the day rolls over
 
         now = datetime.now(timezone.utc).isoformat()
-        next_at = (datetime.now(timezone.utc) + timedelta(seconds=QUEUE_SEND_INTERVAL_SECONDS)).isoformat()
+        next_at = (datetime.now(timezone.utc) + timedelta(seconds=_random_send_interval_seconds())).isoformat()
         try:
-            send_email(item["email"], item["subject"], item["body"], resume_pdf_path)
+            send_email(item["email"], item["subject"], item["body"], resume_pdf_path, resume_filename)
         except Exception as e:  # noqa: BLE001 - record and move on, never halt the queue
             conn.execute(
                 "UPDATE queue_items SET send_status = 'failed', error_message = ?, updated_at = ? WHERE id = ?",

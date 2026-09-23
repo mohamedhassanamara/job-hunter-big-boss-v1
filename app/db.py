@@ -78,9 +78,10 @@ CREATE TABLE IF NOT EXISTS email_drafts (
 );
 
 -- A queue is a fixed batch of at most QUEUE_ITEM_CAP outreach emails sent
--- one at a time, QUEUE_SEND_INTERVAL_SECONDS apart, by the background
--- sender loop (app/queues.py). Status: draft -> sending -> completed, with
--- paused as a side-state of sending.
+-- one at a time, spaced by a random interval between QUEUE_SEND_INTERVAL_MIN_SECONDS
+-- and QUEUE_SEND_INTERVAL_MAX_SECONDS, by the background sender loop
+-- (app/queues.py). Status: draft -> sending -> completed, with paused as a
+-- side-state of sending.
 CREATE TABLE IF NOT EXISTS queues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,

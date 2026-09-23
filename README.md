@@ -312,7 +312,7 @@ Set in `.env` (see `.env.example`):
   this app anyway.
 - `DB_PATH` — default `./data/app.db`
 - `QUEUE_ITEM_CAP` — default `20`. Hard cap on contacts per queue.
-- `QUEUE_SEND_INTERVAL_SECONDS` — default `900` (15 min). Time between sends within a queue.
+- `QUEUE_SEND_INTERVAL_MIN_SECONDS` / `QUEUE_SEND_INTERVAL_MAX_SECONDS` — default `420` / `1200` (7-20 min). Each send within a queue waits a random interval in this range, rather than a fixed gap, to avoid a bot-like, perfectly regular cadence.
 - `SENDER_LOOP_POLL_SECONDS` — default `20`. How often the background sender thread checks for due queues.
 - `SMTP_HOST` / `SMTP_PORT` — default `smtp.gmail.com` / `587`.
 - `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` — required for sending; see "Sending Setup" below.

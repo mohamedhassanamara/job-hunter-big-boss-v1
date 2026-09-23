@@ -39,6 +39,7 @@ from app.queues import (
     get_send_config,
     list_queues,
     pause_queue,
+    remove_item,
     rename_queue,
     resume_queue,
     retry_item,
@@ -460,6 +461,15 @@ def queues_update_item(queue_id: int, item_id: int, payload: dict = Body(...)):
     ok, error = update_queue_item(queue_id, item_id, payload.get("subject", ""), payload.get("body", ""))
     if not ok:
         raise HTTPException(status_code=409, detail=error)
+    return get_queue(queue_id)
+
+
+@app.delete("/api/queues/{queue_id}/items/{item_id}")
+def queues_remove_item(queue_id: int, item_id: int):
+    ok, error = remove_item(queue_id, item_id)
+    if not ok:
+        status_code = 404 if error == "Item not found." else 409
+        raise HTTPException(status_code=status_code, detail=error)
     return get_queue(queue_id)
 
 

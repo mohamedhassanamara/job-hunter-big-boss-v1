@@ -115,11 +115,31 @@ function renderPagination(container, total, page, pageSize, onChange) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   container.innerHTML = `
     <button ${page <= 1 ? "disabled" : ""} data-dir="prev">&larr; Prev</button>
-    <span>Page ${page} of ${totalPages} (${total} total)</span>
+    <span class="flex items-center gap-1.5">
+      Page
+      <input type="number" class="field page-jump-input" style="width: 4.5rem; padding: 0.25rem 0.5rem;" min="1" max="${totalPages}" step="1" value="${page}" />
+      of ${totalPages} (${total} total)
+    </span>
     <button ${page >= totalPages ? "disabled" : ""} data-dir="next">Next &rarr;</button>
   `;
   container.querySelector('[data-dir="prev"]').addEventListener("click", () => onChange(page - 1));
   container.querySelector('[data-dir="next"]').addEventListener("click", () => onChange(page + 1));
+
+  const jumpInput = container.querySelector(".page-jump-input");
+  const commitJump = () => {
+    let target = parseInt(jumpInput.value, 10);
+    if (!Number.isFinite(target)) target = page;
+    target = Math.min(Math.max(target, 1), totalPages);
+    jumpInput.value = target;
+    if (target !== page) onChange(target);
+  };
+  jumpInput.addEventListener("change", commitJump);
+  jumpInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitJump();
+    }
+  });
 }
 
 /* ---------- Stats dashboard ---------- */
@@ -681,7 +701,7 @@ async function loadQueueConfig() {
   const resp = await fetch("/api/queues/config");
   const cfg = await resp.json();
   queueItemCap = cfg.queue_item_cap;
-  queueIntervalLabel.textContent = `${Math.round(cfg.send_interval_seconds / 60)} min`;
+  queueIntervalLabel.textContent = `${Math.round(cfg.send_interval_min_seconds / 60)}-${Math.round(cfg.send_interval_max_seconds / 60)} min`;
   queueCapLabel.textContent = cfg.queue_item_cap;
   document.getElementById("queue-cap-hint").textContent = cfg.queue_item_cap;
   queueDailyCapLabel.textContent = cfg.daily_send_cap;
@@ -818,6 +838,7 @@ function renderQueueItemCard(queueId, item) {
         ${statusBadge(item.review_status)}
         ${needsRevision ? statusBadge("needs_revision") : ""}
         ${statusBadge(item.send_status)}
+        <button type="button" class="remove-item-btn text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-30 disabled:pointer-events-none" ${locked ? `disabled title="Already sent — can't be removed"` : `title="Remove from queue"`}>&times;</button>
       </div>
     </div>
     <div class="meta">${escapeHtml(item.email || "")} · ${escapeHtml(item.title || "")}${item.sent_at ? ` · sent ${formatDate(item.sent_at)}` : ""}</div>
@@ -873,6 +894,11 @@ function renderQueueItemCard(queueId, item) {
     });
   }
 
+  const removeBtn = card.querySelector(".remove-item-btn");
+  if (removeBtn && !locked) {
+    removeBtn.addEventListener("click", () => removeQueueItem(queueId, item.id, contactName || item.company_name));
+  }
+
   const retryBtn = card.querySelector(".retry-item-btn");
   if (retryBtn) {
     retryBtn.addEventListener("click", async () => {
@@ -890,6 +916,21 @@ function renderQueueItemCard(queueId, item) {
   }
 
   return card;
+}
+
+async function removeQueueItem(queueId, itemId, label) {
+  if (!confirm(`Remove "${label}" from this queue? The company/contact itself stays in the system — this just removes it from this queue.`)) return;
+  try {
+    const resp = await fetch(`/api/queues/${queueId}/items/${itemId}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error((await resp.json()).detail || "Could not remove item");
+    await loadQueueDetail(queueId);
+    await loadQueuesList();
+  } catch (err) {
+    queueDetailDiv.insertAdjacentHTML(
+      "afterbegin",
+      `<p class="text-sm text-rose-600 dark:text-rose-400 mb-2">Error: ${escapeHtml(err.message)}</p>`
+    );
+  }
 }
 
 async function deleteQueue(queueId, name) {
